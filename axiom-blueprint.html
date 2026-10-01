@@ -1,0 +1,615 @@
+<style>
+:root{
+  --bg:#F4F3EE;
+  --bg-elev:#FCFBF7;
+  --bg-soft:#ECEBE4;
+  --ink:#16243C;
+  --ink-soft:#465771;
+  --ink-faint:#74839B;
+  --line:#CFD5E0;
+  --line-strong:#98A6BC;
+  --accent:#1E4FD8;
+  --accent-ink:#1E4FD8;
+  --accent-soft:#E2E9FA;
+  --live:#0B7D5A;
+  --live-ink:#0B7D5A;
+  --live-soft:#DFF2E9;
+  --amber:#8A5A12;
+  --amber-soft:#F4EAD6;
+  --grid-line:rgba(30,79,216,.08);
+  --shadow:0 1px 2px rgba(22,36,60,.05),0 8px 24px rgba(22,36,60,.06);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#0A1120;
+    --bg-elev:#0F1830;
+    --bg-soft:#0D1526;
+    --ink:#E6ECF7;
+    --ink-soft:#A9B8D0;
+    --ink-faint:#6F82A1;
+    --line:#1E2B47;
+    --line-strong:#34456C;
+    --accent:#6EA8FF;
+    --accent-ink:#8FB8FF;
+    --accent-soft:#14244A;
+    --live:#34D399;
+    --live-ink:#57E0B2;
+    --live-soft:#0E2A21;
+    --amber:#E3A25A;
+    --amber-soft:#2C2317;
+    --grid-line:rgba(110,168,255,.09);
+    --shadow:0 1px 2px rgba(0,0,0,.3),0 8px 24px rgba(0,0,0,.28);
+  }
+}
+:root[data-theme="dark"]{
+    --bg:#0A1120;
+    --bg-elev:#0F1830;
+    --bg-soft:#0D1526;
+    --ink:#E6ECF7;
+    --ink-soft:#A9B8D0;
+    --ink-faint:#6F82A1;
+    --line:#1E2B47;
+    --line-strong:#34456C;
+    --accent:#6EA8FF;
+    --accent-ink:#8FB8FF;
+    --accent-soft:#14244A;
+    --live:#34D399;
+    --live-ink:#57E0B2;
+    --live-soft:#0E2A21;
+    --amber:#E3A25A;
+    --amber-soft:#2C2317;
+    --grid-line:rgba(110,168,255,.09);
+    --shadow:0 1px 2px rgba(0,0,0,.3),0 8px 24px rgba(0,0,0,.28);
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{
+  margin:0;
+  background:var(--bg);
+  color:var(--ink);
+  font-family:"Hanken Grotesk",system-ui,sans-serif;
+  font-size:16.5px;
+  line-height:1.66;
+  -webkit-font-smoothing:antialiased;
+  background-image:
+    linear-gradient(var(--grid-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
+  background-size:52px 52px;
+}
+::selection{background:var(--accent-soft)}
+a{color:var(--accent-ink);text-decoration:none}
+a:hover{text-decoration:underline}
+
+.wrap{max-width:1200px;margin:0 auto;padding:0 28px}
+.sidebar-title{display:block;margin-bottom:16px}
+
+/* ---------- Hero ---------- */
+.hero{padding:72px 0 44px;border-bottom:1px solid var(--line)}
+.kicker{
+  font-family:"Space Mono",monospace;
+  font-size:12px;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--accent-ink);margin:0 0 20px;
+}
+h1{
+  font-family:"Schibsted Grotesk",system-ui,sans-serif;
+  font-weight:800;letter-spacing:-.03em;line-height:.98;
+  font-size:clamp(2.5rem,6.4vw,4.4rem);
+  margin:0 0 20px;text-wrap:balance;max-width:16ch;
+}
+h1 .live{color:var(--live-ink)}
+.tagline{
+  font-size:1.18rem;color:var(--ink-soft);
+  max-width:60ch;margin:0 0 28px;line-height:1.5;
+}
+.hero-meta{
+  display:flex;flex-wrap:wrap;gap:10px;align-items:center;
+  font-family:"Space Mono",monospace;font-size:11.5px;color:var(--ink-faint);
+  letter-spacing:.04em;text-transform:uppercase;
+}
+.hero-meta .dot{color:var(--live-ink)}
+.pill{
+  border:1px solid var(--line);border-radius:999px;
+  padding:4px 12px;background:var(--bg-elev);
+}
+
+/* ---------- Layout: rail + content ---------- */
+.layout{display:grid;grid-template-columns:252px minmax(0,1fr);gap:56px;padding:44px 0 80px}
+nav.rail{
+  position:sticky;top:28px;align-self:start;
+  display:flex;flex-direction:column;gap:2px;
+  font-size:13.5px;
+}
+nav.rail .rail-label{
+  font-family:"Space Mono",monospace;font-size:11px;letter-spacing:.14em;
+  text-transform:uppercase;color:var(--ink-faint);margin:0 0 10px;padding-left:12px;
+}
+nav.rail a{
+  color:var(--ink-soft);padding:5px 12px;border-left:2px solid var(--line);
+  display:block;}
+nav.rail a:hover{color:var(--ink);text-decoration:none;border-left-color:var(--accent)}
+nav.rail a span.mono{font-family:"Space Mono",monospace;font-size:11px;color:var(--accent-ink);margin-right:7px}
+nav.rail a.cur{border-left-color:var(--accent);color:var(--ink)}
+
+main{min-width:0}
+
+/* ---------- Prose ---------- */
+section{padding:56px 0 8px;border-top:1px solid var(--line)}
+section:first-of-type{border-top:none;padding-top:8px}
+.sec-head{display:flex;align-items:baseline;gap:14px;margin:0 0 6px}
+.sec-no{
+  font-family:"Space Mono",monospace;font-size:13px;color:var(--accent-ink);
+  letter-spacing:.02em;white-space:nowrap;
+}
+h2{
+  font-family:"Schibsted Grotesk",system-ui,sans-serif;
+  font-weight:750;letter-spacing:-.02em;font-size:1.72rem;
+  margin:0;text-wrap:balance;}
+.sec-sub{color:var(--ink-soft);font-size:1.06rem;max-width:66ch;margin:2px 0 26px}
+h3{
+  font-family:"Schibsted Grotesk",system-ui,sans-serif;
+  font-weight:700;letter-spacing:-.015em;font-size:1.16rem;
+  margin:34px 0 8px;}
+p{margin:0 0 14px;max-width:66ch}
+.lede{font-size:1.05rem;color:var(--ink)}
+ul,ol{margin:0 0 16px;padding-left:22px;max-width:66ch}
+li{margin:5px 0}
+b,strong{font-weight:650}
+.mono,code{font-family:"Space Mono",monospace;font-size:.86em;background:var(--bg-soft);
+  border:1px solid var(--line);border-radius:5px;padding:0 .35em;color:var(--ink)}
+code{font-size:.82em}
+.hl{color:var(--live-ink);font-weight:600}
+
+/* ---------- Callouts ---------- */
+.sheet{
+  background:var(--bg-elev);border:1px solid var(--line);border-radius:12px;
+  box-shadow:var(--shadow);padding:20px 22px;margin:22px 0;max-width:70ch;
+}
+.sheet > .sheet-label{
+  font-family:"Space Mono",monospace;font-size:11px;letter-spacing:.13em;
+  text-transform:uppercase;color:var(--accent-ink);display:flex;align-items:center;gap:8px;
+  margin:-20px -22px 14px;padding:10px 22px;border-bottom:1px solid var(--line);
+  background:var(--bg-soft);border-radius:11px 11px 0 0;
+}
+.sheet.truth{border-left:3px solid var(--amber)}
+.sheet.truth .sheet-label{color:var(--amber)}
+.sheet.truth::before{content:"reality check";display:none}
+.sheet p:last-child{margin-bottom:0}
+
+/* ---------- Figure ---------- */
+figure{margin:26px 0;max-width:820px}
+figure.slim{max-width:560px}
+.fig-head{display:flex;align-items:center;gap:10px;margin-bottom:6px}
+figcaption{font-size:.9rem;color:var(--ink-soft);max-width:72ch;margin-top:8px}
+.fig-head .fig-label{
+  font-family:"Space Mono",monospace;font-size:11px;letter-spacing:.12em;
+  text-transform:uppercase;color:var(--ink-faint);
+}
+.svg-holder{
+  border:1px solid var(--line);border-radius:12px;background:var(--bg-elev);
+  box-shadow:var(--shadow);overflow-x:auto;
+}
+.svg-holder svg{display:block;max-width:100%;height:auto;margin:0 auto}
+
+/* ---------- Tokens / chips ---------- */
+.chip-row{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0 18px;max-width:70ch}
+.chip{
+  font-size:12.5px;font-family:"Space Mono",monospace;letter-spacing:.02em;
+  border:1px solid var(--line);border-radius:999px;padding:4px 11px;background:var(--bg-elev);color:var(--ink-soft);
+}
+.chip.now{border-color:var(--live);color:var(--live-ink);background:var(--live-soft)}
+.chip.far{border-color:var(--amber);color:var(--amber);background:var(--amber-soft)}
+
+/* ---------- Compatibility table ---------- */
+.tblwrap{overflow-x:auto;max-width:820px;border:1px solid var(--line);border-radius:12px;
+  background:var(--bg-elev);box-shadow:var(--shadow);margin:16px 0 8px}
+table{border-collapse:collapse;width:100%;font-size:14px;min-width:560px}
+th,td{text-align:left;padding:12px 16px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-family:"Space Mono",monospace;font-size:11px;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--ink-faint);background:var(--bg-soft)}
+tr:last-child td{border-bottom:none}
+td .src{font-family:"Space Mono",monospace;font-size:11px;color:var(--accent-ink);white-space:nowrap}
+.trow td{color:var(--ink-soft)}
+
+/* ---------- Plane legend ---------- */
+.planes{display:flex;flex-direction:column;gap:0;max-width:820px;margin:14px 0 8px;
+  border:1px solid var(--line);border-radius:12px;overflow:hidden;box-shadow:var(--shadow)}
+.plane{display:flex;align-items:baseline;gap:18px;padding:12px 18px;border-top:1px solid var(--line);background:var(--bg-elev)}
+.plane:first-child{border-top:none}
+.plane .p-no{font-family:"Space Mono",monospace;font-size:12px;color:var(--accent-ink);min-width:44px}
+.plane .p-name{font-family:"Schibsted Grotesk",system-ui,sans-serif;font-weight:650;font-size:1rem;min-width:230px}
+.plane .p-desc{color:var(--ink-soft);font-size:.93rem;line-height:1.5}
+.plane.ai .p-no{color:var(--live-ink)}
+.plane.ai{border-left:3px solid var(--live)}
+
+footer{border-top:1px solid var(--line);padding:34px 0 70px;color:var(--ink-faint);
+  font-family:"Space Mono",monospace;font-size:12px;letter-spacing:.03em}
+
+@media (max-width:920px){
+  .layout{grid-template-columns:1fr;gap:8px}
+  nav.rail{position:static;flex-direction:row;flex-wrap:wrap;gap:4px;padding-bottom:8px}
+  nav.rail a{border-left:none;border-bottom:2px solid transparent;padding:6px 10px}
+  nav.rail .rail-label{display:none}
+}
+@media (prefers-reduced-motion: reduce){html{scroll-behavior:auto}}
+</style>
+
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@600;700;750;800&family=Hanken+Grotesk:wght@400;500;600&family=Space+Mono&display=swap">
+
+<header class="hero">
+  <div class="wrap">
+    <p class="kicker">Operating System · Architecture Blueprint · Working codename — Axiom</p>
+    <h1>An OS where AI is a <span class="live">system resource</span>, not an app.</h1>
+    <p class="tagline">Building on a capability microkernel, Axiom reconsiders the operating system around the realities Windows, macOS, and Linux were never designed for: ubiquitous local AI, standing cyber threats, and a lifetime spent across many devices. This is the grounded architecture — what is buildable, where the hard engineering actually is, and what stays aspirational.</p>
+    <div class="hero-meta">
+      <span class="pill">v0.1 · conceptual</span>
+      <span class="dot">●</span>
+      <span>P0 kernel → P6 apps</span>
+      <span class="dot">●</span>
+      <span>grounded &amp; honest framing</span>
+    </div>
+  </div>
+</header>
+
+<div class="layout wrap">
+  <nav class="rail" aria-label="Sections">
+    <span class="rail-label">Blueprint</span>
+    <a href="#thesis"><span class="mono">00</span>Principles</a>
+    <a href="#truths"><span class="mono">01</span>Hard truths</a>
+    <a href="#borrow"><span class="mono">02</span>What we borrow</a>
+    <a href="#planes"><span class="mono">03</span>The 8 planes</a>
+    <a href="#kernel"><span class="mono">P0</span>Microkernel</a>
+    <a href="#ai-core"><span class="mono">P3</span>AI core</a>
+    <a href="#fs"><span class="mono">P2</span>Data plane</a>
+    <a href="#mesh"><span class="mono">P4</span>Device mesh</a>
+    <a href="#session"><span class="mono">P5</span>Session &amp; UI</a>
+    <a href="#reality"><span class="mono">·</span>Now vs. far</a>
+  </nav>
+
+  <main>
+
+    <!-- 00 Principles -->
+    <section id="thesis">
+      <div class="sec-head"><span class="sec-no">00</span><h2>Six principles, then everything follows</h2></div>
+      <p class="lede">Most of this OS is a single repricing: treat AI as infrastructure the same way we already treat the CPU. Once that mental model is fixed, security, the filesystem, the interface, and multi-device behavior all start to fall out as consequences rather than features.</p>
+      <ol>
+        <li><b>AI is a scheduler-owned resource, not an app.</b> A privileged <em>Neural Resource Manager</em> allocates model compute the way the kernel allocates CPU time — with quotas, preemption, power budget, and capabilities. No app ships its own always-on chatbot; they request a capability from the system.</li>
+        <li><b>Security by capability, not by approval dialogs.</b> Apps can only do what a capability grant allows. There is no "any file" default. The permission prompt is a rare exception, not the seatbelt that holds the OS together.</li>
+        <li><b>The filesystem is a relationship graph, not a folder tree.</b> Files are content-addressed objects in a flat store, organized by tags, provenance, and project — paths are an optional view over it.</li>
+        <li><b>Your devices are one computer.</b> A trusted peer mesh treats your laptop, tablet, and phone as loosely coupled components of a single machine that roams state, shares resources, and routes input to wherever you're looking.</li>
+        <li><b>The interface reshapes itself to intent.</b> Workspaces are grouped by what you're doing, not by application type; a glanceable information layer floats above the work without owning the screen.</li>
+        <li><b>Privacy is architectural, not a setting.</b> Key material lives under keys only you hold; the local AI runs in a no-egress zone behind a system-level firewall on its own context.</li>
+      </ol>
+    </section>
+
+    <!-- 01 Hard truths -->
+    <section id="truths">
+      <div class="sec-head"><span class="sec-no">01</span><h2>The hard truths up front</h2></div>
+      <p class="lede">Before any of this is worth reading, let's clear the table. These are the tensions a serious architect has to accept rather than paper over — each is solvable, but only if it's designed for from the first day.</p>
+
+      <div class="sheet truth"><div class="sheet-label">Truth · microkernels</div>
+      <p><b>Microkernel IPC has a real cost.</b> Every cross-server call pays context-switch and marshaling overhead. This is fine for a control plane (grant a capability, ask for a model), but it is the wrong path for zero-copy media and hot AI tensors. Axiom pairs capability IPC with shared-memory + batching across the hot path, and keeps only authority on the IPC — not bulk data. This is the classic production answer, and it's why QNX and seL4-class kernels run real systems.</p></div>
+
+      <div class="sheet truth"><div class="sheet-label">Truth · "best of both"</div>
+      <p><b>You cannot merge Windows and macOS.</b> You cannot fuse two kernels or two window systems, and you shouldn't try. Axiom borrows <em>UX and API patterns</em> — macOS's integrated coherence and system services, Windows's hardware breadth and management rigor — and delivers them on one coherent microkernel of its own. The honest promise is a single coherent story, not a hybrid of two.</p></div>
+
+      <div class="sheet truth"><div class="sheet-label">Truth · immutable vs. evolving AI</div>
+      <p><b>An immutable core and always-changing AI models pull against each other.</b> The OS core is sealed and verified at boot — but models and the semantic index are hot data that must update weekly. So Axiom separates the two: a <em>read-only, signed</em> core, and a <em>mutable, code-signed</em> model store with its own behavioral attestation and rollback. Immutability protects the platform, not the content that lives on it.</p></div>
+
+      <div class="sheet truth"><div class="sheet-label">Truth · sensor indexing</div>
+      <p><b>"Index everything on your screen and audio" is a real power, compute, and ethical budget.</b> Constant OCR + embeddings of live screen content drains battery and raises a genuine privacy question about what an OS is allowed to remember. Axiom rations it: embeddings are cheap and batched, indexing is opt-in per source, long-lived personal context lives encrypted under your key, and apps expose <em>structured content</em> to the index so the system doesn't have to blindly photograph everything.</p></div>
+
+      <div class="sheet truth"><div class="sheet-label">Truth · local AI ceiling</div>
+      <p><b>NPUs are real but small.</b> By 2026 an on-device accelerator is tens of TOPS — enough for small models, semantic embeddings, transcription, and lightweight assistants. It is not enough for frontier-scale models. The local core therefore guarantees <em>defensive AI</em> (search, context, summarization) entirely on-device, while anything beyond the on-device ceiling crosses the model egress boundary only with explicit, per-request user approval. That boundary is the honest firewall.</p></div>
+
+      <div class="sheet truth"><div class="sheet-label">Truth · zero-knowledge vs. roaming</div>
+      <p><b>State roaming sends bytes off-device, and that tension is real.</b> "Keys only you hold" and "pick up exactly where you left off on your tablet" only coexist if <em>your keys roam with your identity</em>, not with the cloud. The server becomes a scrutable relay that stores only ciphertext and metadata, cannot decrypt, and is audited. You must be honest that a minimal online component exists — the achievement is making it unable to read you, not pretending it isn't there.</p></div>
+
+      <div class="sheet truth"><div class="sheet-label">Truth · device offload</div>
+      <p><b>Borrowing another device's NPU is latency-bound.</b> Round-trip over Wi-Fi commonly exceeds what local inference costs, so cross-device compute offload only wins for <em>batch and async</em> work — "render this on my tablet's NPU overnight" — not for real-time rendering or live voice. The mesh is designed around async resource brokerage, not latency-sensitive borrowing.</p></div>
+    </section>
+
+    <!-- 02 Borrow -->
+    <section id="borrow">
+      <div class="sec-head"><span class="sec-no">02</span><h2>What we borrow, and from where</h2></div>
+      <div class="tblwrap"><table>
+        <tr><th>From</th><th>Pattern we take</th><th>How it lands in Axiom</th></tr>
+        <tr><td><span class="src">macOS</span></td><td>Integrated coherence</td><td>One system-services layer every app shares — clipboard, audio routing, continuity — instead of a grab-bag of vendor daemons.</td></tr>
+        <tr><td><span class="src">macOS</span></td><td>App lifecycle &amp; suspension</td><td>An OS-owned session manager that safely backgrounds, snapshots, and restores apps — the substrate of state roaming.</td></tr>
+        <tr><td><span class="src">Windows</span></td><td>Hardware &amp; ecosystem breadth</td><td>Driver servers abstracted so the same OS runs laptops, tablets, and phones without per-vendor rewrites.</td></tr>
+        <tr><td><span class="src">Windows</span></td><td>Enterprise management</td><td>Capability-grant policies become the admin surface — fleet policy <em>is</em> a capability set, so "MDM" stops being a bolted-on afterthought.</td></tr>
+        <tr><td><span class="src">Windows</span></td><td>Backward-compat discipline</td><td>A stable ABI plus a compatibility runtime, so the platform doesn't rewrite the software industry every release.</td></tr>
+        <tr><td><span class="src">Linux</span></td><td>Openness &amp; auditability</td><td>The kernel and core servers are auditable; security claims are verifiable, not marketing.</td></tr>
+      </table></div>
+      <p>Everything is delivered through <em>one</em> microkernel and <em>one</em> session model. Compatibility with existing apps is a runtime given to them — not a reason to keep two window systems alive.</p>
+    </section>
+
+    <!-- 03 Planes -->
+    <section id="planes">
+      <div class="sec-head"><span class="sec-no">03</span><h2>The stack, in eight planes</h2></div>
+      <p class="lede">Axiom is built as a vertical stack of isolated planes. The single red line is the <b>trust boundary</b>: only plane P0 is trusted. Everything above it — drivers, filesystem, AI, network — runs unprivileged, and no crash or compromise in one plane can take down the OS. Each numbered plane is a genuine ordering: lower planes serve the ones above.</p>
+
+      <div class="planes">
+        <div class="plane"><span class="p-no">P6</span><span class="p-name">App runtime &amp; SDK</span><span class="p-desc">Containers, capability grants, the developer surface that makes the rest usable.</span></div>
+        <div class="plane"><span class="p-no">P5</span><span class="p-name">Session &amp; interface</span><span class="p-desc">Intent workspaces, glanceable information layers, unified input pipeline.</span></div>
+        <div class="plane"><span class="p-no">P4</span><span class="p-name">Device mesh</span><span class="p-desc">Trusted peer network; state roaming, resource brokerage, universal clipboard/audio.</span></div>
+        <div class="plane ai"><span class="p-no">P3</span><span class="p-name">AI core</span><span class="p-desc">Neural Resource Manager, model registry, unified semantic index, egress boundary.</span></div>
+        <div class="plane"><span class="p-no">P2</span><span class="p-name">Data plane</span><span class="p-desc">Content-addressed object store + relationship graph; no rigid folder tree.</span></div>
+        <div class="plane"><span class="p-no">P1</span><span class="p-name">System servers</span><span class="p-desc">Drivers, filesystem, networking as isolated user-space servers — crash-isolated.</span></div>
+        <div class="plane"><span class="p-no">P0</span><span class="p-name">Microkernel</span><span class="p-desc">Capabilities, IPC, scheduling, memory. The only trusted code.</span></div>
+      </div>
+
+      <figure>
+        <div class="fig-head"><span class="fig-label">Fig. 1</span></div>
+        <div class="svg-holder">
+        <svg viewBox="0 0 760 560" role="img" aria-label="The Axiom layer stack. Only the microkernel is trusted; every plane above runs unprivileged and is crash-isolated, with the AI core and session planes granted resources through capability-based IPC.">
+          <defs>
+            <marker id="arr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+            </marker>
+          </defs>
+
+          <!-- horizontal planes -->
+          <g font-family="Space Mono,monospace" font-size="11" letter-spacing=".06em">
+            <rect x="40" y="40" width="560" height="52" rx="8" fill="var(--accent-soft)" stroke="var(--line-strong)"/>
+            <text x="60" y="58" fill="var(--ink)">P6  APP RUNTIME</text>
+            <text x="60" y="76" fill="var(--ink-faint)" font-family="Hanken Grotesk, sans-serif" font-size="11" letter-spacing="0">containers · capability grants · SDK</text>
+
+            <rect x="40" y="104" width="560" height="52" rx="8" fill="var(--accent-soft)" stroke="var(--line-strong)"/>
+            <text x="60" y="122" fill="var(--ink)">P5  SESSION &amp; UI</text>
+            <text x="60" y="140" fill="var(--ink-faint)" font-family="Hanken Grotesk, sans-serif" font-size="11" letter-spacing="0">intent workspaces · info layers · input</text>
+
+            <rect x="40" y="168" width="560" height="52" rx="8" fill="var(--accent-soft)" stroke="var(--line-strong)"/>
+            <text x="60" y="186" fill="var(--ink)">P4  DEVICE MESH</text>
+            <text x="60" y="204" fill="var(--ink-faint)" font-family="Hanken Grotesk, sans-serif" font-size="11" letter-spacing="0">state roaming · resource brokerage · clipboard</text>
+
+            <!-- AI core plane highlighted live -->
+            <rect x="40" y="232" width="560" height="66" rx="8" fill="var(--live-soft)" stroke="var(--live)"/>
+            <text x="60" y="252" fill="var(--live-ink)">P3  AI CORE</text>
+            <text x="60" y="272" fill="var(--ink-soft)" font-family="Hanken Grotesk, sans-serif" font-size="11" letter-spacing="0">neural resource manager · semantic index · no-egress boundary</text>
+            <circle cx="576" cy="252" r="4" fill="var(--live)"><animate attributeName="opacity" values="1;.3;1" dur="2.4s" repeatCount="indefinite"/></circle>
+
+            <rect x="40" y="310" width="560" height="52" rx="8" fill="var(--accent-soft)" stroke="var(--line-strong)"/>
+            <text x="60" y="328" fill="var(--ink)">P2  DATA PLANE</text>
+            <text x="60" y="346" fill="var(--ink-faint)" font-family="Hanken Grotesk, sans-serif" font-size="11" letter-spacing="0">object store · relationship graph · no folders</text>
+
+            <rect x="40" y="374" width="560" height="52" rx="8" fill="var(--accent-soft)" stroke="var(--line-strong)"/>
+            <text x="60" y="392" fill="var(--ink)">P1  SYSTEM SERVERS</text>
+            <text x="60" y="410" fill="var(--ink-faint)" font-family="Hanken Grotesk, sans-serif" font-size="11" letter-spacing="0">drivers · filesystem · networking (user-space)</text>
+
+            <!-- kernel trusted -->
+            <rect x="40" y="438" width="560" height="52" rx="8" fill="#16243C" stroke="#16243C"/>
+            <text x="60" y="456" fill="#F4F3EE">P0  MICROKERNEL</text>
+            <text x="60" y="474" fill="#A9B8D0" font-family="Hanken Grotesk, sans-serif" font-size="11" letter-spacing="0">capabilities · IPC · scheduling · memory</text>
+
+            <rect x="40" y="502" width="560" height="40" rx="8" fill="none" stroke="var(--line)"/>
+            <text x="60" y="526" fill="var(--ink-faint)">HARDWARE · CPU · NPU · GPU · DRAM · peripherals</text>
+          </g>
+
+          <!-- trust boundary note -->
+          <g font-family="Space Mono,monospace" font-size="11" letter-spacing=".04em">
+            <line x1="600" y1="40" x2="600" y2="500" stroke="var(--amber)" stroke-dasharray="5 4"/>
+            <text x="612" y="270" fill="var(--amber)" writing-mode="tb">TRUST BOUNDARY — ONLY P0 IS TRUSTED</text>
+          </g>
+        </svg>
+        </div>
+        <figcaption><b>Fig. 1 — The red line.</b> Only the microkernel is trusted. Every plane above it is an unprivileged, crash-isolated server that gets authority — never raw power — through capability IPC. The AI core is drawn live because it is the one plane that behaves like a schedulable resource rather than an application.</figcaption>
+      </figure>
+
+      <p>Two figures below show the two mechanisms the whole design stands on: how an app gets authority (Fig. 2) and how the AI core is kept from exfiltrating your context (Fig. 3).</p>
+    </section>
+
+    <!-- P0 Kernel -->
+    <section id="kernel">
+      <div class="sec-head"><span class="sec-no">P0</span><h2>The microkernel &amp; capability security</h2></div>
+      <p class="lede">This is the plan's security foundation, and it is deliberately the most conservative, most proven layer. Axiom does not hand-roll a kernel from scratch — it builds on a verified-capability microkernel lineage.</p>
+
+      <h3>Components</h3>
+      <ul>
+        <li><b>Capability space.</b> Every object — a file, a pipe, a model instance, a GPU surface — is a node in a per-process capability space. Invocation requires holding a grant; there is no ambient privilege.</li>
+        <li><b>IPC + shared memory.</b> Capability invocation carries <em>authority</em>; bulk data travels through shared-memory windows to keep control-plane costs off the media path.</li>
+        <li><b>User-space driver &amp; FS servers.</b> A GPU driver, a filesystem, or a network stack that crashes is restarted — the kernel and every other app continue. This is the literal payoff of "a driver bug can't take the OS."</li>
+        <li><b>Verified boot + sealed core.</b> The trusted-computing chain measures P0 at boot; the sealed core is read-only, so the surface an attacker can poison stays tiny and measurable.</li>
+      </ul>
+
+      <figure class="slim">
+        <div class="fig-head"><span class="fig-label">Fig. 2</span></div>
+        <div class="svg-holder">
+        <svg viewBox="0 0 620 190" role="img" aria-label="How an app obtains a model: it invokes a capability on a handle, the kernel routes the call to the owning server (the Neural Resource Manager), which allocates accelerator time and returns an unforgeable handle. The app never touches the NPU directly.">
+          <defs>
+            <marker id="arr2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+            </marker>
+          </defs>
+          <g font-family="Space Mono,monospace" font-size="11">
+            <rect x="30" y="60" width="150" height="66" rx="8" fill="var(--accent-soft)" stroke="var(--line-strong)"/>
+            <text x="46" y="86" fill="var(--ink)">APP</text>
+            <text x="46" y="106" fill="var(--ink-faint)" font-family="Hanken Grotesk,sans-serif">holds a capability</text>
+
+            <rect x="340" y="60" width="150" height="66" rx="8" fill="var(--live-soft)" stroke="var(--live)"/>
+            <text x="356" y="86" fill="var(--live-ink)">NEURAL RES. MGR</text>
+            <text x="356" y="106" fill="var(--ink-soft)" font-family="Hanken Grotesk,sans-serif">owning server (P3)</text>
+
+            <rect x="520" y="60" width="80" height="66" rx="8" fill="var(--accent-soft)" stroke="var(--line-strong)"/>
+            <text x="534" y="86" fill="var(--ink)">NPU</text>
+
+            <line x1="180" y1="93" x2="332" y2="93" stroke="currentColor" stroke-width="1.5" marker-end="url(#arr2)"/>
+            <text x="200" y="80" fill="var(--ink-faint)" font-family="Hanken Grotesk,sans-serif" font-size="11">invoke capability</text>
+            <text x="200" y="110" fill="var(--ink-faint)" font-family="Hanken Grotesk,sans-serif" font-size="11">on a handle</text>
+
+            <line x1="490" y1="93" x2="514" y2="93" stroke="currentColor" stroke-width="1.5" marker-end="url(#arr2)"/>
+            <text x="475" y="130" fill="var(--ink-faint)" font-family="Hanken Grotesk,sans-serif" font-size="11">schedules</text>
+            <text x="475" y="146" fill="var(--ink-faint)" font-family="Hanken Grotesk,sans-serif" font-size="11">compute</text>
+
+            <line x1="340" y1="40" x2="180" y2="40" stroke="var(--live)" stroke-width="1.5" marker-end="url(#arr2)"/>
+            <text x="196" y="28" fill="var(--live-ink)" font-family="Hanken Grotesk,sans-serif" font-size="11">returns unforgeable model handle</text>
+          </g>
+        </svg>
+        </div>
+        <figcaption><b>Fig. 2 — Authority, not power.</b> The app never touches hardware directly. It holds a capability, invokes it, and the kernel routes the call to the server that owns the resource. Sandboxing isn't a permission menu bolted on top — it is the only way anything can be done at all.</figcaption>
+      </figure>
+    </section>
+
+    <!-- P3 AI core -->
+    <section id="ai-core">
+      <div class="sec-head"><span class="sec-no">P3</span><h2>The AI core: AI as infrastructure</h2></div>
+      <p class="lede">This is the crown jewel and the honest reason this OS exists. Axiom gives the AI stack what CPU and memory have always had — a privileged owner that rations, schedules, and guarantees isolation — and surrounds it with a hard egress boundary.</p>
+
+      <h3>Neural Resource Manager (the repriced resource)</h3>
+      <ul>
+        <li><b>Owns accelerators &amp; model memory.</b> All NPU/GPU time and model weights are allocated by one privileged server, in quota slices, like CPU time-slices.</li>
+        <li><b>Auto-selection &amp; preemption.</b> An app asks for "a model that classifies intent on-device, under 120&nbsp;ms"; the NRM picks the smallest capable signed model, loads it, and preempts it when a foreground task needs the silicon. Background AI is power- and thermal-accounted, so the system doesn't melt for a background summarizer.</li>
+        <li><b>Model registry.</b> Models are signed, layered (system + per-app), and rollback-safe — the immutable-core answer to "but models change every week."</li>
+      </ul>
+
+      <h3>Unified Semantic Index</h3>
+      <p>Instead of filename search, Axiom continuously builds a local, encrypted, content-addressed index over files, application structure, screen context, and audio. Querying is natural language — <em>"find the Q3 revenue chart I had open on Tuesday"</em> — resolved by a local planner into the relationship graph plus a vector store. The keystone decision: apps are <em>encouraged</em> to hand the index structured content (titles, entities, timestamps) rather than forcing the OS to photograph and OCR everything, which keeps both power and privacy sane.</p>
+
+      <h3>The egress boundary (privacy as a firewall)</h3>
+      <p>Local models run in a <em>no-egress zone</em>. Any outbound network call — from any process — crosses a single system-level filter that classifies whether model context is leaving the device. Everything on-device stays on-device; only an explicit, per-request user approval opens a controlled path to a remote model or service, and even that ride is encrypted under your keys. This is a stricter, more general version of what chat apps should have had all along.</p>
+
+      <figure>
+        <div class="fig-head"><span class="fig-label">Fig. 3</span></div>
+        <div class="svg-holder">
+        <svg viewBox="0 0 760 300" role="img" aria-label="The AI privacy boundary. Local context (files, screen, audio) feeds on-device models and the semantic index inside a dashed no-egress zone. Any outbound network call passes a classifier at the egress seam; unapproved calls carrying model context are dropped, and only an explicit user approval opens a trusted, encrypted path.">
+          <defs>
+            <marker id="arr3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+            </marker>
+          </defs>
+          <g font-family="Hanken Grotesk,sans-serif" font-size="11.5">
+            <!-- local zone -->
+            <rect x="28" y="30" width="430" height="244" rx="12" fill="none" stroke="var(--accent)" stroke-dasharray="6 5" stroke-width="1.6"/>
+            <text x="46" y="52" fill="var(--accent-ink)" font-family="Space Mono,monospace" font-size="11" letter-spacing=".08em">NO-EGRESS ZONE · ON-DEVICE</text>
+
+            <!-- sources -->
+            <rect x="52" y="74" width="120" height="52" rx="7" fill="var(--bg-elev)" stroke="var(--line-strong)"/>
+            <text x="66" y="94" fill="var(--ink)">files</text>
+            <text x="66" y="112" fill="var(--ink-faint)" font-size="11">object store (P2)</text>
+
+            <rect x="52" y="138" width="120" height="52" rx="7" fill="var(--bg-elev)" stroke="var(--line-strong)"/>
+            <text x="66" y="158" fill="var(--ink)">screen</text>
+            <text x="66" y="176" fill="var(--ink-faint)" font-size="11">compositor feed</text>
+
+            <rect x="52" y="202" width="120" height="52" rx="7" fill="var(--bg-elev)" stroke="var(--line-strong)"/>
+            <text x="66" y="222" fill="var(--ink)">audio</text>
+            <text x="66" y="240" fill="var(--ink-faint)" font-size="11">session manager</text>
+
+            <!-- models + index -->
+            <rect x="210" y="86" width="150" height="60" rx="7" fill="var(--live-soft)" stroke="var(--live)"/>
+            <text x="226" y="108" fill="var(--live-ink)">local models</text>
+            <text x="226" y="128" fill="var(--ink-soft)" font-size="11">NRM-scheduled</text>
+
+            <rect x="210" y="168" width="150" height="60" rx="7" fill="var(--live-soft)" stroke="var(--live)"/>
+            <text x="226" y="190" fill="var(--live-ink)">semantic index</text>
+            <text x="226" y="210" fill="var(--ink-soft)" font-size="11">encrypted on disk</text>
+
+            <line x1="172" y1="100" x2="204" y2="104" stroke="currentColor" marker-end="url(#arr3)"/>
+            <line x1="172" y1="164" x2="204" y2="180" stroke="currentColor" marker-end="url(#arr3)"/>
+            <line x1="172" y1="228" x2="204" y2="196" stroke="currentColor" marker-end="url(#arr3)"/>
+
+            <!-- egress seam --->
+            <rect x="486" y="92" width="150" height="120" rx="7" fill="var(--amber-soft)" stroke="var(--amber)"/>
+            <text x="502" y="116" fill="var(--amber)" font-family="Space Mono,monospace" font-size="11" letter-spacing=".04em">EGRESS</text>
+            <text x="502" y="134" fill="var(--amber)" font-family="Space Mono,monospace" font-size="11" letter-spacing=".04em">CLASSIFIER</text>
+            <text x="502" y="160" fill="var(--ink-soft)" font-size="11">inspects every</text>
+            <text x="502" y="176" fill="var(--ink-soft)" font-size="11">outbound call</text>
+            <text x="502" y="198" fill="var(--ink-soft)" font-size="11" font-family="Space Mono,monospace">model ctx? → drop</text>
+
+            <rect x="676" y="92" width="62" height="120" rx="7" fill="var(--bg-elev)" stroke="var(--line-strong)"/>
+            <text x="693" y="150" fill="var(--ink-faint)" font-size="10.5" text-anchor="middle">INTERNET</text>
+
+            <line x1="360" y1="116" x2="414" y2="118" stroke="currentColor" marker-end="url(#arr3)"/>
+            <text x="366" y="100" fill="var(--ink-faint)" font-size="11">outbound attempt</text>
+
+            <line x1="560" y1="206" x2="560" y2="236" stroke="var(--amber)" stroke-width="1.6"/>
+            <polygon points="556,232 560,240 564,232" fill="var(--amber)"/>
+            <text x="436" y="252" fill="var(--amber)" font-size="11">unapproved model-context calls are blocked before they leave the device</text>
+
+            <line x1="684" y1="152" x2="682" y2="152" stroke="var(--live)" stroke-width="2"/>
+            <text x="560" y="60" fill="var(--live-ink)" font-size="11">only explicit per-request user approval opens a trusted, encrypted path</text>
+          </g>
+        </svg>
+        </div>
+        <figcaption><b>Fig. 3 — The firewall is on the AI's own context.</b> Everything on-device — files, screen, audio, models, the index — lives inside a dashed no-egress zone. The egress classifier sits at the only way out and drops any call carrying model context unless the user explicitly approved it. This is "privacy as architecture": the boundary exists in the system, not as a checkbox in a settings panel.</figcaption>
+      </figure>
+    </section>
+
+    <!-- P2 Data plane -->
+    <section id="fs">
+      <div class="sec-head"><span class="sec-no">P2</span><h2>The data plane: a relationship graph, not a folder tree</h2></div>
+      <p class="lede">Folders force a single parent, a single answer to "where does this belong?", and they punish large, messy, real-world data. Axiom's storage is a flat, content-addressed object store with a relationship graph on top.</p>
+
+      <h3>How it works</h3>
+      <ul>
+        <li><b>Content-addressed objects.</b> A file is identified by its content hash plus metadata — the same shape as a version-control object and a content-addressable network at once. Duplication is free; nothing is "copied" in the naive sense.</li>
+        <li><b>Tags, projects, and provenance as first-class edges.</b> A document can belong to the <em>Q3-planning</em> project, carry a <em>finance</em> tag, and remember "created from that meeting recording." The graph <em>is</em> the organization; paths are one optional view.</li>
+        <li><b>The semantic index reads the graph.</b> Because the data plane is a database, the AI core queries it natively — natural-language search is a graph query plus a vector lookup, not a filename substring match.</li>
+        <li><b>Atomic snapshots &amp; rollback.</b> Every update is transactional; the system keeps a rolling snapshot ledger. An update or even a filesystem operation that fails rolls back to the exact prior state on next boot — "atomic updates" isn't a feature, it's the storage model.</li>
+        <li><b>Peer sync built in.</b> Zero-configuration peer-to-peer replication to your own devices, encrypted end-to-end, is a data-plane service — no cloud middle-man required.</li>
+      </ul>
+
+      <div class="sheet truth"><div class="sheet-label">Reality · hierarchy is still a view people want</div><p>Some workflows genuinely want a folder ("put all the tax docs here"). The honest answer: the tree remains as an <em>illustrated view</em> over the graph — a saved query — never as the storage mechanism. You get both, and nothing silently requires one.</p></div>
+    </section>
+
+    <!-- P4 Mesh -->
+    <section id="mesh">
+      <div class="sec-head"><span class="sec-no">P4</span><h2>The device mesh: one computer, many bodies</h2></div>
+      <p class="lede">Continuity and Handoff generalize into a first-class OS service: a trusted peer mesh that treats every device you own as a loosely coupled component of a single machine.</p>
+
+      <h3>What the mesh provides</h3>
+      <ul>
+        <li><b>Trusted device attestation.</b> Devices join the mesh via your key material, not Bluetooth pairing menus. Trust is unconditional-per-device and revocable.</li>
+        <li><b>True state roaming.</b> Because P5's session manager already snapshots app state, the mesh roams <em>exact state</em> — cursor position, undo history, scroll — not just synced data. Walk away from the desktop, and the tablet is where you left off.</li>
+        <li><b>Resource brokerage (async-first).</b> "Render this on my tablet's NPU" is a brokered batch job, not a real-time borrow. The latency honesty from the hard truths is encoded in the protocol: offload only where the round-trip is cheaper than local compute.</li>
+        <li><b>Automatic failover.</b> Wi-Fi drops and the phone's cellular modem is handed over by a system service, invisibly.</li>
+        <li><b>Universal clipboard &amp; audio.</b> Routing follows your active gaze/input device — copy on the laptop, paste on the phone, and audio follows the screen you're looking at.</li>
+      </ul>
+
+      <div class="sheet truth"><div class="sheet-label">Reality · the relay exists and is scrutable</div><p>True mesh transport across the internet needs a relay to find devices and carry ciphertext. The design's integrity comes from the relay being <em>unable to read</em> — all payloads are encrypted under keys only you hold, and the relay is audited. That's zero-knowledge honestly: an endpoint exists, it just can't see you.</p></div>
+    </section>
+
+    <!-- P5 Session -->
+    <section id="session">
+      <div class="sec-head"><span class="sec-no">P5</span><h2>The session: an interface that reshapes to intent</h2></div>
+      <p class="lede">The desktop/folder/start-menu model is a metaphor for a single-tasking, single-authority world. The session layer replaces the metaphor with intent — the interface reorganizes around what you're doing, not which application is on top.</p>
+
+      <h3>Intent workspaces</h3>
+      <p>A workspace groups <em>apps, assets, notifications, and background services</em> by project or intent. Sliding from <em>Work</em> to <em>Gaming</em> is a session operation, not a manual shuffle: background services for the old intent are suspended, notification policies swap, and the right assets (the Q3 deck, the codebase, the game library) come forward as one set. Because the data plane is a graph, a workspace is a saved graph query.</p>
+
+      <h3>Dynamic information layers</h3>
+      <p>Static widgets become <em>glanceable, interactive layers</em> composited above the working surface — live and out of the way, read at a glance without stealing focus. The compositor owns them, so they're coherent across themes and never crowd out the work.</p>
+
+      <h3>Unified input pipeline</h3>
+      <p>Voice, gaze, hand gestures, pen, and keyboard/mouse feed a single input bus that arbitrates by contact priority — the device you're actively touching or looking at wins. Switching is lag-free because it's one stream with one scheduler, not N half-integrated drivers. (Honest caveat: gaze and hand-tracking depend on the hardware actually having the sensors.)</p>
+    </section>
+
+    <!-- Now vs Far -->
+    <section id="reality">
+      <div class="sec-head"><span class="sec-no">·</span><h2>Buildable now vs. genuinely far</h2></div>
+      <p class="lede">The grounded view, in one table. This is what a serious engineering lead would tell you the day the project starts: what the foundation rests on today, and which promises are research-grade.</p>
+
+      <div class="chip-row">
+        <span class="chip now">buildable today</span>
+        <span class="chip far">research-grade / aspirational</span>
+      </div>
+
+      <div class="tblwrap"><table>
+        <tr><th>Plane</th><th>What's real now</th><th>What's far</th></tr>
+        <tr><td class="src">P0 kernel</td><td>Verified-capability microkernels (seL4 lineage) exist and run real systems.</td><td>—</td></tr>
+        <tr><td class="src">P1 servers</td><td>User-space drivers &amp; filesystems are proven (Fuchsia, QNX).</td><td>Performance parity on every peripheral, on day one.</td></tr>
+        <tr><td class="src">P3 AI core</td><td>On-device small-model orchestration, semantic search over files, and egress filtering are all feasible on 2026 NPUs.</td><td>Running frontier-scale assistants fully on-device; trustworthy "understand my screen" at any arbitrary app.</td></tr>
+        <tr><td class="src">P2 data plane</td><td>Content-addressed stores + graph databases + transaction snapshots are mature building blocks.</td><td>Fully replacing deep, entrenched folder-based workflows overnight.</td></tr>
+        <tr><td class="src">P4 mesh</td><td>State roaming, E2E-encrypted sync, and async compute offload are buildable today.</td><td>Real-time cross-device rendering over Wi-Fi; universal "one machine" latency.</td></tr>
+        <tr><td class="src">P5 session</td><td>Compositor-owned workspaces and unified input pipelines are buildable.</td><td>Reliable gaze/gesture input without dedicated sensors.</td></tr>
+        <tr><td class="src">Whole</td><td>—</td><td>A drop-in, multi-billion-user OS that replaces Windows/macOS: that's a decades, many-hundred-engineer program, not a feature.</td></tr>
+      </table></div>
+
+      <p>The honest sequence implied by all of this: prove <em>P0 → P1</em> as a secure, driver-isolated microkernel on real hardware; prove <em>P3</em> (the AI core) as the differentiation, because it's the only plane that changes what an OS <em>is</em>; and let the rest — UI, mesh, data plane — ride on those two foundations. But this is the blueprint, and its job is the architecture, not the timeline.</p>
+    </section>
+
+    <footer>
+      AXIOM · architecture blueprint · working codename — conceptual v0.1
+      &nbsp;·&nbsp; microkernel · capability security · AI-as-resource · relationship storage · device mesh
+    </footer>
+  </main>
+</div>
