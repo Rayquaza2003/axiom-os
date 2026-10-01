@@ -21,11 +21,17 @@ create virtual table if not exists fts using fts5(text, content='passages', cont
 create table if not exists workspaces(name text primary key, query text);
 ";
 
+/// Added to the cosine score of objects carrying a boost tag. Small on purpose: a tag nudges, never excludes.
+pub const TAG_BOOST: f32 = 0.1;
+
 pub type Embed<'a> = &'a dyn Fn(&[String]) -> Result<Vec<Vec<f32>>>;
 
 #[derive(Default, Clone)]
 pub struct Filter {
+    /// Hard filter: object must carry every tag.
     pub tags: Vec<String>,
+    /// Soft signal: objects carrying any of these tags rank higher (see `TAG_BOOST`).
+    pub boost: Vec<String>,
     pub project: Option<String>,
     pub span: Option<(f64, f64)>,
 }
@@ -282,11 +288,12 @@ impl Store {
         }
         let sql = format!("select p.obj, p.text, p.emb from passages p join objects o on o.id=p.obj where 1{w}");
         let mut st = self.db.prepare(&sql)?;
+        let boosted = self.tagged_objects(&f.boost)?;
         let mut best: HashMap<String, Hit> = HashMap::new();
         let mut rows = st.query(params_from_iter(p))?;
         while let Some(r) = rows.next()? {
             let (obj, text, emb): (String, String, Vec<u8>) = (r.get(0)?, r.get(1)?, r.get(2)?);
-            let score = cosine(q, &from_bytes(&emb));
+            let score = cosine(q, &from_bytes(&emb)) + if boosted.contains(&obj) { TAG_BOOST } else { 0.0 };
             if best.get(&obj).map_or(true, |h| score > h.score) {
                 best.insert(obj.clone(), Hit { obj, text, score });
             }
@@ -295,6 +302,17 @@ impl Store {
         v.sort_by(|a, b| b.score.total_cmp(&a.score));
         v.truncate(k);
         Ok(v)
+    }
+
+    fn tagged_objects(&self, tags: &[String]) -> Result<std::collections::HashSet<String>> {
+        let mut out = std::collections::HashSet::new();
+        for t in tags {
+            let mut st = self.db.prepare("select src from edges where type='tagged' and dst=?")?;
+            for r in st.query_map([format!("tag:{t}")], |r| r.get::<_, String>(0))? {
+                out.insert(r?);
+            }
+        }
+        Ok(out)
     }
 
     pub fn keyword(&self, q: &str, f: &Filter, k: usize) -> Result<Vec<Hit>> {

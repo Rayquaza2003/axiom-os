@@ -114,7 +114,10 @@ pub fn execute(store: &Store, nrm: &Nrm, q: &str, now: f64, k: usize) -> Result<
         let hits = store.keyword(&p.terms.join(" "), &Filter::default(), k)?;
         return Ok(QueryResult { plan: p, mode: Mode::Keyword, hits });
     }
-    let f = Filter { tags: p.tags.clone(), project: None, span: p.t0.zip(p.t1) };
+    // With search terms a tag only boosts ranking (a folder name like "data" must not hide other docs).
+    // With no terms the tag is the only signal left, so it filters.
+    let (tags, boost) = if p.terms.is_empty() { (p.tags.clone(), vec![]) } else { (vec![], p.tags.clone()) };
+    let f = Filter { tags, boost, project: None, span: p.t0.zip(p.t1) };
     let qvec = if p.terms.is_empty() { None } else { Some(nrm.embed(INTERACTIVE, vec![p.terms.join(" ")])?.remove(0)) };
     let hits = store.search(qvec.as_deref(), &f, k)?;
     Ok(QueryResult { plan: p, mode: Mode::Hybrid, hits })

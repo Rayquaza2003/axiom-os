@@ -7,7 +7,7 @@ use regex::Regex;
 const STOP: &[&str] = &[
     "docs", "doc", "documents", "document", "files", "file", "notes", "note", "my", "the", "all", "a", "an", "of",
     "from", "about", "in", "on", "for", "and", "me", "show", "find", "search", "summarize", "summarise", "summary",
-    "what", "is", "are", "with", "this", "last", "to", "give",
+    "what", "is", "are", "how", "does", "do", "with", "this", "last", "to", "give",
 ];
 
 #[derive(Debug, Default, Clone)]

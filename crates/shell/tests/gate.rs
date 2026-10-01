@@ -35,6 +35,8 @@ fn gate() {
     write(&docs, "finance/q3-budget.md", "Budget review: marketing spend cut, hiring paused.", q3);
     write(&docs, "travel/trip.md", "Flights to Lisbon booked for the offsite.", q3);
     write(&docs, "finance/q1-plan.md", "Q1 plan: launch pricing experiment.", old);
+    write(&docs, "data/sync.md", "Sync protocol replicates objects between devices.", old);
+    write(&docs, "security/egress.md", "The egress firewall blocks model context from leaving the device.", old);
 
     let sent = Arc::new(Mutex::new(vec![]));
     let s2 = sent.clone();
@@ -50,7 +52,7 @@ fn gate() {
     };
 
     // data plane: import, dedupe, incremental, chunked storage round-trips
-    assert_eq!(ax.import(&docs, None).unwrap(), 4);
+    assert_eq!(ax.import(&docs, None).unwrap(), 6);
     assert_eq!(ax.import(&docs, None).unwrap(), 0);
     let oid = ax.store.resolve(docs.join("travel/trip.md").to_str().unwrap()).unwrap();
     assert_eq!(ax.store.get(&oid).unwrap(), b"Flights to Lisbon booked for the offsite.");
@@ -70,7 +72,11 @@ fn gate() {
     assert_eq!(titles(&ax, &r.hits), ["q3-budget.md", "q3-revenue.md", "trip.md"]);
     let (r, _) = ax.ask("finance docs about revenue", now, None, false).unwrap(); // tag + vector
     assert_eq!(ax.store.title(&r.hits[0].obj), "q3-revenue.md");
-    assert!(!titles(&ax, &r.hits).contains(&"trip.md".to_string()));
+    assert_eq!(ax.store.title(&r.hits.last().unwrap().obj), "trip.md", "untagged docs rank last but are not excluded");
+    // a tag word inside a real question must not hide the right doc (regression: "data" folder tag)
+    let (r, _) = ax.ask("how does the egress firewall protect my data", now, None, false).unwrap();
+    assert!(r.plan.tags.contains(&"data".to_string()));
+    assert_eq!(ax.store.title(&r.hits[0].obj), "egress.md");
     let (r, _) = ax.ask("lisbon", now, None, false).unwrap(); // low confidence -> keyword fallback
     assert_eq!(format!("{:?}", r.mode), "Keyword");
     assert_eq!(ax.store.title(&r.hits[0].obj), "trip.md");
