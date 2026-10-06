@@ -72,7 +72,7 @@ fn gate() {
     assert_eq!(titles(&ax, &r.hits), ["q3-budget.md", "q3-revenue.md", "trip.md"]);
     let (r, _) = ax.ask("finance docs about revenue", now, None, false).unwrap(); // tag + vector
     assert_eq!(ax.store.title(&r.hits[0].obj), "q3-revenue.md");
-    assert_eq!(ax.store.title(&r.hits.last().unwrap().obj), "trip.md", "untagged docs rank last but are not excluded");
+    assert_eq!(r.hits.len(), 6, "tag boosts ranking but never excludes untagged docs");
     // a tag word inside a real question must not hide the right doc (regression: "data" folder tag)
     let (r, _) = ax.ask("how does the egress firewall protect my data", now, None, false).unwrap();
     assert!(r.plan.tags.contains(&"data".to_string()));

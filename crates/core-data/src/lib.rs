@@ -299,7 +299,7 @@ impl Store {
             }
         }
         let mut v: Vec<Hit> = best.into_values().collect();
-        v.sort_by(|a, b| b.score.total_cmp(&a.score));
+        v.sort_by(|a, b| b.score.total_cmp(&a.score).then_with(|| a.obj.cmp(&b.obj))); // deterministic on ties
         v.truncate(k);
         Ok(v)
     }
@@ -363,5 +363,111 @@ impl Store {
         platform::copy(snap, &self.path)?;
         *self = Store::open(&self.path.clone(), self.dim)?;
         Ok(())
+    }
+}
+
+// --- replication (used by the mesh) -------------------------------------------
+
+/// Everything needed to recreate one object on another device.
+pub struct ObjectBundle {
+    pub id: String,
+    pub size: i64,
+    pub created: f64,
+    /// (blake3 hash, bytes) in order.
+    pub chunks: Vec<(String, Vec<u8>)>,
+    /// (text, embedding bytes) in order.
+    pub passages: Vec<(String, Vec<u8>)>,
+}
+
+pub struct EdgeRow {
+    pub src: String,
+    pub ty: String,
+    pub dst: String,
+    pub conf: f64,
+    pub source: String,
+    pub ts: f64,
+}
+
+impl Store {
+    pub fn dim(&self) -> usize {
+        self.dim
+    }
+
+    pub fn object_ids(&self) -> Result<Vec<String>> {
+        let mut st = self.db.prepare("select id from objects order by id")?;
+        let v = st.query_map([], |r| r.get(0))?.collect::<Result<Vec<String>, _>>()?;
+        Ok(v)
+    }
+
+    pub fn edge_rows(&self) -> Result<Vec<EdgeRow>> {
+        let mut st = self.db.prepare("select src, type, dst, conf, source, ts from edges")?;
+        let rows = st.query_map([], |r| Ok(EdgeRow {
+            src: r.get(0)?, ty: r.get(1)?, dst: r.get(2)?, conf: r.get(3)?, source: r.get(4)?, ts: r.get(5)?,
+        }))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    pub fn export_object(&self, id: &str) -> Result<ObjectBundle> {
+        let (size, created): (i64, f64) = self.db.query_row("select size, created from objects where id=?", [id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        let mut st = self.db.prepare("select c.blob, b.data from object_chunks c join blobs b on b.hash=c.blob where c.obj=? order by c.ord")?;
+        let chunks = st.query_map([id], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<Result<_, _>>()?;
+        let mut st = self.db.prepare("select text, emb from passages where obj=? order by ord")?;
+        let passages = st.query_map([id], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<Result<_, _>>()?;
+        Ok(ObjectBundle { id: id.to_string(), size, created, chunks, passages })
+    }
+
+    /// Untrusted input: verifies every hash and vector size before writing anything. Idempotent.
+    pub fn import_object(&self, b: &ObjectBundle) -> Result<()> {
+        if self.db.query_row("select 1 from objects where id=?", [&b.id], |_| Ok(())).is_ok() {
+            return Ok(());
+        }
+        let mut whole = blake3::Hasher::new();
+        for (h, data) in &b.chunks {
+            if blake3::hash(data).to_hex().as_str() != h {
+                bail!("chunk hash mismatch in object {}", b.id);
+            }
+            whole.update(data);
+        }
+        if whole.finalize().to_hex().as_str() != b.id {
+            bail!("object {} does not match its id", b.id);
+        }
+        if b.passages.iter().any(|(_, e)| e.len() != self.dim * 4) {
+            bail!("object {} has embeddings of the wrong dimension", b.id);
+        }
+        for (i, (h, data)) in b.chunks.iter().enumerate() {
+            self.db.execute("insert or ignore into blobs values(?,?)", params![h, data])?;
+            self.db.execute("insert into object_chunks values(?,?,?)", params![b.id, i as i64, h])?;
+        }
+        self.db.execute("insert into objects values(?,?,?)", params![b.id, b.size, b.created])?;
+        for (i, (text, emb)) in b.passages.iter().enumerate() {
+            self.db.execute("insert into passages(obj, ord, text, emb) values(?,?,?,?)", params![b.id, i as i64, text, emb])?;
+            self.db.execute("insert into fts(rowid, text) values(?,?)", params![self.db.last_insert_rowid(), text])?;
+        }
+        Ok(())
+    }
+
+    /// Last-writer-wins per (src, type, dst).
+    ///
+    /// ponytail: no tombstones, so edge deletion does not replicate (nothing deletes edges yet).
+    pub fn merge_edge(&self, e: &EdgeRow) -> Result<()> {
+        self.db.execute(
+            "insert into edges values(?,?,?,?,?,?) on conflict(src, type, dst) do update set \
+             conf=excluded.conf, source=excluded.source, ts=excluded.ts where excluded.ts > edges.ts",
+            params![e.src, e.ty, e.dst, e.conf, e.source, e.ts])?;
+        Ok(())
+    }
+
+    pub fn atomic<T>(&self, f: impl FnOnce() -> Result<T>) -> Result<T> {
+        self.db.execute_batch("BEGIN")?;
+        match f() {
+            Ok(v) => {
+                self.db.execute_batch("COMMIT")?;
+                Ok(v)
+            }
+            Err(e) => {
+                let _ = self.db.execute_batch("ROLLBACK");
+                Err(e)
+            }
+        }
     }
 }

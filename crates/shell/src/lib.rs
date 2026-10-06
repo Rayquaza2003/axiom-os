@@ -8,11 +8,13 @@ use serde_json::json;
 use std::path::Path;
 use std::sync::Arc;
 
+pub mod apps;
 pub mod tui;
 
 pub const AGING_S: f64 = 30.0;
 
 pub struct Axiom {
+    pub home: std::path::PathBuf,
     pub store: Store,
     pub nrm: Nrm,
     pub egress: Egress,
@@ -22,6 +24,7 @@ impl Axiom {
     pub fn open(home: &Path, backend: Arc<dyn NpuBackend>, approve: Option<Approve>, transport: Option<Transport>) -> Result<Axiom> {
         platform::makedirs(home)?;
         Ok(Axiom {
+            home: home.to_path_buf(),
             store: Store::open(&home.join("axiom.db"), backend.dim())?,
             nrm: Nrm::new(backend, AGING_S),
             egress: Egress::new(&home.join("egress.db"), approve, transport)?,

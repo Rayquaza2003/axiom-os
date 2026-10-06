@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Result};
-use axiom_shell::{mode_name, tui, Axiom};
+use axiom_shell::{apps, mode_name, tui, Axiom};
 use chrono::{Local, TimeZone};
 use clap::{Parser, Subcommand};
 use core_ai::egress::Approve;
@@ -40,10 +40,20 @@ enum Cmd {
     Egress { action: EgressAction, value: Option<String> },
     /// Interactive terminal UI
     Tui,
+    /// Device mesh: key | join HEX | serve ADDR | sync ADDR
+    Mesh { action: MeshAction, value: Option<String> },
+    /// Sandboxed apps: install DIR | run NAME [ARGS..] | list | revoke NAME [CAP]
+    App { action: AppAction, name: Option<String>, rest: Vec<String> },
 }
 
 #[derive(clap::ValueEnum, Clone)]
 enum WsAction { Save, Open, List }
+
+#[derive(clap::ValueEnum, Clone)]
+enum MeshAction { Key, Join, Serve, Sync }
+
+#[derive(clap::ValueEnum, Clone, PartialEq)]
+enum AppAction { Install, Run, List, Revoke }
 
 #[derive(clap::ValueEnum, Clone)]
 enum EgressAction { Log, Allow, Budget }
@@ -116,12 +126,80 @@ fn main() -> Result<()> {
             }
         },
         Cmd::Tui => tui::run(&ax)?,
+        Cmd::Mesh { action, value } => {
+            let need = || value.clone().ok_or_else(|| anyhow!("argument required"));
+            match action {
+                MeshAction::Key => {
+                    let key = mesh::load_or_create_key(&ax.home)?;
+                    println!("{}\n(secret: enter it on the other device with `axiom mesh join`)", mesh::key_to_hex(&key));
+                }
+                MeshAction::Join => mesh::join(&ax.home, &need()?)?,
+                MeshAction::Sync => {
+                    let (addr, key) = (need()?, mesh::load_or_create_key(&ax.home)?);
+                    let st = mesh::sync(&addr, &ax.store, &key)?;
+                    ax.egress.record(&addr, "mesh", 0, "allow", &format!("{st:?}"))?;
+                    println!("synced with {addr}: {st:?}");
+                }
+                MeshAction::Serve => {
+                    let (l, key) = (platform::listen(&need()?)?, mesh::load_or_create_key(&ax.home)?);
+                    eprintln!("listening on {}", l.local_addr()?);
+                    loop {
+                        match mesh::serve_one(&l, &ax.store, &key) {
+                            Ok(st) => {
+                                ax.egress.record("mesh-peer", "mesh", 0, "allow", &format!("{st:?}"))?;
+                                println!("synced: {st:?}");
+                            }
+                            Err(e) => {
+                                ax.egress.record("mesh-peer", "mesh", 0, "deny", &e.to_string())?;
+                                eprintln!("rejected: {e}");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Cmd::App { action, name, rest } => {
+            let name_or = || name.clone().ok_or_else(|| anyhow!("app name or directory required"));
+            match action {
+                AppAction::Install => {
+                    let ask = |app: &str, cap: &str| {
+                        if !std::io::stdin().is_terminal() {
+                            return false;
+                        }
+                        eprint!("Grant app {app:?} the capability {cap:?}? [y/N] ");
+                        let _ = std::io::stderr().flush();
+                        let mut s = String::new();
+                        let _ = std::io::stdin().read_line(&mut s);
+                        s.trim().eq_ignore_ascii_case("y")
+                    };
+                    let (n, granted) = apps::install(&ax, &PathBuf::from(name_or()?), &ask)?;
+                    println!("installed {n}; granted: {}", if granted.is_empty() { "nothing".into() } else { granted.join(", ") });
+                }
+                AppAction::Run => {
+                    let r = apps::run(&ax, &name_or()?, &rest, now, std::time::Duration::from_secs(300))?;
+                    r.log.iter().for_each(|l| println!("{l}"));
+                    for (c, ok) in &r.calls {
+                        eprintln!("[{}] {c}", if *ok { "allowed" } else { "denied" });
+                    }
+                    std::process::exit(r.exit.unwrap_or(1));
+                }
+                AppAction::List => {
+                    for (n, granted, required) in apps::list(&ax.home)? {
+                        println!("{n}: granted [{}] requires [{}]", granted.join(", "), required.join(", "));
+                    }
+                }
+                AppAction::Revoke => {
+                    let n = apps::revoke(&ax.home, &name_or()?, rest.first().map(String::as_str))?;
+                    println!("revoked {n} grant(s)");
+                }
+            }
+        }
     }
     Ok(())
 }
 
 impl Cmd {
     fn needs_approval(&self) -> bool {
-        matches!(self, Cmd::Ask { cloud: Some(_), .. })
+        matches!(self, Cmd::Ask { cloud: Some(_), .. } | Cmd::App { action: AppAction::Run, .. })
     }
 }

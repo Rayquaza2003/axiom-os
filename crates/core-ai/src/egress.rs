@@ -45,7 +45,7 @@ pub struct Egress {
     transport: Transport,
 }
 
-fn host_key(dest: &str) -> String {
+pub fn host_key(dest: &str) -> String {
     dest.split("://").last().unwrap_or(dest).split('/').next().unwrap_or(dest).to_string()
 }
 
@@ -87,7 +87,8 @@ impl Egress {
             params![kind, t0], |r| r.get(0)).unwrap_or(0)
     }
 
-    fn record(&self, dest: &str, kind: &str, n: usize, decision: &str, reason: &str) -> Result<()> {
+    /// Append an audit row. Public so other planes (mesh) can log their own traffic.
+    pub fn record(&self, dest: &str, kind: &str, n: usize, decision: &str, reason: &str) -> Result<()> {
         self.db.execute("insert into audit values(?,?,?,?,?,?)", params![platform::now(), dest, kind, n as i64, decision, reason])?;
         Ok(())
     }

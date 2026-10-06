@@ -22,9 +22,12 @@ kernel questions are deferred until the prototype proves out.
 | BS.2 hardware | Apple Silicon Mac for the prototype; RK3588 for the first bare-metal target. |
 | BT.1 build | Python package + plain scripts for the prototype; Bazel only when a multi-language kernel build exists. |
 
-Prototype status: Rust workspace (`platform`, `core-data`, `core-ai`, `shell`) with Blake3 + FastCDC objects, a TUI and
-optional TTS. Remaining gaps: HashEmbedder is lexical (semantic embeddings and LLM summaries need an OpenAI-compatible
-server such as llama-server or Ollama, not installed); snapshots copy the whole DB; the planner is rule-based.
+Prototype status: Rust workspace (`platform`, `core-data`, `core-ai`, `mesh`, `shell`). Built: P2 (Blake3 + FastCDC objects, graph,
+snapshots), P3 (NRM, planner, egress firewall), P4 subset (pre-shared-key encrypted two-device sync; objects union, edges LWW),
+P5 subset (CLI, TUI, briefing), P6 subset (deny-by-default capability broker, macOS sandbox-exec). Not built: kernel and drivers
+(P0/P1), relay/NAT traversal, Noise NK pairing, state roaming, resource brokerage, native/WASM app SDKs, app store.
+Known gaps: HashEmbedder is lexical (semantic needs an OpenAI-compatible server); snapshots copy the whole DB; planner is rule-based;
+file names do not replicate across devices (a synced object's title is its first line).
 
 ---
 
