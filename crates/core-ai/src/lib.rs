@@ -109,6 +109,12 @@ pub struct QueryResult {
 
 /// <0.7 keyword fallback; >=0.7 hybrid. Read-only: writes (saving a summary) need an explicit flag upstream.
 pub fn execute(store: &Store, nrm: &Nrm, q: &str, now: f64, k: usize) -> Result<QueryResult> {
+    execute_in(store, nrm, q, now, k, None)
+}
+
+/// `execute` limited to objects carrying the tag `scope` (a scoped app capability).
+pub fn execute_in(store: &Store, nrm: &Nrm, q: &str, now: f64, k: usize, scope: Option<&str>) -> Result<QueryResult> {
+    let scope: Vec<String> = scope.into_iter().map(String::from).collect();
     let known = store.known_tags()?;
     let mut p = plan(q, &known, now);
     if nrm.backend.has_llm() {
@@ -118,12 +124,13 @@ pub fn execute(store: &Store, nrm: &Nrm, q: &str, now: f64, k: usize) -> Result<
         }
     }
     if p.confidence < 0.7 {
-        let hits = store.keyword(&p.terms.join(" "), &Filter::default(), k)?;
+        let hits = store.keyword(&p.terms.join(" "), &Filter { tags: scope, ..Filter::default() }, k)?;
         return Ok(QueryResult { plan: p, mode: Mode::Keyword, hits });
     }
     // With search terms a tag only boosts ranking (a folder name like "data" must not hide other docs).
     // With no terms the tag is the only signal left, so it filters.
-    let (tags, boost) = if p.terms.is_empty() { (p.tags.clone(), vec![]) } else { (vec![], p.tags.clone()) };
+    let (mut tags, boost) = if p.terms.is_empty() { (p.tags.clone(), vec![]) } else { (vec![], p.tags.clone()) };
+    tags.extend(scope);
     let f = Filter { tags, boost, project: None, span: p.t0.zip(p.t1) };
     let qvec = if p.terms.is_empty() { None } else { Some(nrm.embed(INTERACTIVE, vec![p.terms.join(" ")])?.remove(0)) };
     let hits = store.search(qvec.as_deref(), &f, k)?;

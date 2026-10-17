@@ -31,8 +31,10 @@ enum Cmd {
     Tag { obj: String, tag: String },
     /// Remove a tag (the deletion syncs to paired devices)
     Untag { obj: String, tag: String },
-    /// Workspaces are saved queries
+    /// Workspaces are saved queries; `ws open` with no name reopens the active one (it roams with the mesh)
     Ws { action: WsAction, name: Option<String>, query: Vec<String> },
+    /// Universal clipboard: push the host clipboard into the mesh, pull the newest one back
+    Clip { action: ClipAction },
     /// Daily briefing
     Brief { #[arg(long)] speak: bool },
     Snapshot { #[arg(default_value = "manual")] label: String },
@@ -42,9 +44,14 @@ enum Cmd {
     Egress { action: EgressAction, value: Option<String> },
     /// Interactive terminal UI
     Tui,
-    /// Device mesh: key | join HEX | serve ADDR | sync ADDR
-    Mesh { action: MeshAction, value: Option<String> },
-    /// Sandboxed apps: install DIR | run NAME [ARGS..] | list | revoke NAME [CAP]
+    /// Device mesh: key | join HEX | serve ADDR|relay://HOST:PORT [--jobs] | sync ADDR[,ADDR..] | relay ADDR
+    Mesh {
+        action: MeshAction,
+        value: Option<String>,
+        /// serve: also run embed/generate/speak jobs for paired devices
+        #[arg(long)] jobs: bool,
+    },
+    /// Sandboxed apps: install DIR | run NAME [ARGS..] | list | revoke NAME [CAP] | sign DIR | trust KEY
     App { action: AppAction, name: Option<String>, rest: Vec<String> },
 }
 
@@ -52,10 +59,13 @@ enum Cmd {
 enum WsAction { Save, Open, List }
 
 #[derive(clap::ValueEnum, Clone)]
-enum MeshAction { Key, Join, Serve, Sync }
+enum MeshAction { Key, Join, Serve, Sync, Relay }
+
+#[derive(clap::ValueEnum, Clone)]
+enum ClipAction { Push, Pull, Show }
 
 #[derive(clap::ValueEnum, Clone, PartialEq)]
-enum AppAction { Install, Run, List, Revoke }
+enum AppAction { Install, Run, List, Revoke, Sign, Trust }
 
 #[derive(clap::ValueEnum, Clone)]
 enum EgressAction { Log, Allow, Budget }
@@ -83,7 +93,7 @@ fn main() -> Result<()> {
             let (r, text) = ax.ask(&query.join(" "), now, cloud.as_deref(), save)?;
             println!("[{}, confidence {:.2}, tags {:?}]\n{text}", mode_name(&r.mode), r.plan.confidence, r.plan.tags);
             if speak {
-                platform::speak(&text);
+                ax.speak(&text)?;
             }
         }
         Cmd::Tag { obj, tag } => ax.store.tag(&ax.store.resolve(&obj)?, &tag, 1.0, "user")?,
@@ -93,24 +103,34 @@ fn main() -> Result<()> {
             }
         }
         Cmd::Ws { action, name, query } => match action {
-            WsAction::Save => {
-                let name = name.ok_or_else(|| anyhow!("workspace name required"))?;
-                ax.store.db.execute("insert or replace into workspaces values(?,?)", [name, query.join(" ")])?;
-            }
+            WsAction::Save => ax.save_workspace(&name.ok_or_else(|| anyhow!("workspace name required"))?, &query.join(" "))?,
             WsAction::Open => {
-                let name = name.ok_or_else(|| anyhow!("workspace name required"))?;
-                let (_, q) = ax.workspaces()?.into_iter().find(|(n, _)| *n == name).ok_or_else(|| anyhow!("no such workspace"))?;
-                println!("{}", ax.ask(&q, now, None, false)?.1);
+                let (name, text) = ax.open_workspace(name.as_deref(), now)?;
+                println!("[{name}]\n{text}");
             }
-            WsAction::List => ax.workspaces()?.iter().for_each(|(n, q)| println!("{n}: {q}")),
+            WsAction::List => {
+                let active = ax.active_workspace();
+                for (n, q) in ax.workspaces()? {
+                    println!("{}{n}: {q}", if active.as_ref() == Some(&n) { "* " } else { "  " });
+                }
+            }
         },
         Cmd::Brief { speak } => {
             let text = ax.brief(now)?;
             println!("{text}");
             if speak {
-                platform::speak(&text);
+                ax.speak(&text)?;
             }
         }
+        Cmd::Clip { action } => match action {
+            ClipAction::Push => println!("pushed {}", &ax.clip_push(&platform::clipboard_get()?, now)?[..12]),
+            ClipAction::Pull => {
+                let text = ax.clip_current()?.ok_or_else(|| anyhow!("mesh clipboard is empty"))?;
+                platform::clipboard_set(&text)?;
+                println!("pulled {} bytes", text.len());
+            }
+            ClipAction::Show => println!("{}", ax.clip_current()?.unwrap_or_default()),
+        },
         Cmd::Snapshot { label } => println!("{}", ax.store.snapshot(&label)?.display()),
         Cmd::Rollback { file } => {
             let mut ax = ax;
@@ -133,12 +153,29 @@ fn main() -> Result<()> {
             }
         },
         Cmd::Tui => tui::run(&ax)?,
-        Cmd::Mesh { action, value } => {
+        Cmd::Mesh { action, value, jobs } => {
             let need = || value.clone().ok_or_else(|| anyhow!("argument required"));
+            let log = |peer: &str, r: Result<mesh::Stats>| -> Result<()> {
+                match r {
+                    Ok(st) => {
+                        ax.egress.record(peer, "mesh", 0, "allow", &format!("{st:?}"))?;
+                        println!("synced: {st:?}");
+                    }
+                    Err(e) => {
+                        ax.egress.record(peer, "mesh", 0, "deny", &e.to_string())?;
+                        eprintln!("rejected: {e}");
+                    }
+                }
+                Ok(())
+            };
             match action {
                 MeshAction::Key => {
-                    let key = mesh::load_or_create_key(&ax.home)?;
-                    println!("{}\n(secret: enter it on the other device with `axiom mesh join`)", mesh::key_to_hex(&key));
+                    let hex = mesh::key_to_hex(&mesh::load_or_create_key(&ax.home)?);
+                    if std::io::stdout().is_terminal() {
+                        let qr = qrcode::QrCode::new(hex.as_bytes())?;
+                        println!("{}", qr.render::<qrcode::render::unicode::Dense1x2>().quiet_zone(true).build());
+                    }
+                    println!("{hex}\n(secret: enter it on the other device with `axiom mesh join`, or scan the code)");
                 }
                 MeshAction::Join => mesh::join(&ax.home, &need()?)?,
                 MeshAction::Sync => {
@@ -148,20 +185,31 @@ fn main() -> Result<()> {
                     println!("synced with {addr}: {st:?}");
                 }
                 MeshAction::Serve => {
-                    let (l, key) = (platform::listen(&need()?)?, mesh::load_or_create_key(&ax.home)?);
-                    eprintln!("listening on {}", l.local_addr()?);
-                    loop {
-                        match mesh::serve_one(&l, &ax.store, &key) {
-                            Ok(st) => {
-                                ax.egress.record("mesh-peer", "mesh", 0, "allow", &format!("{st:?}"))?;
-                                println!("synced: {st:?}");
-                            }
-                            Err(e) => {
-                                ax.egress.record("mesh-peer", "mesh", 0, "deny", &e.to_string())?;
-                                eprintln!("rejected: {e}");
+                    let (addr, key) = (need()?, mesh::load_or_create_key(&ax.home)?);
+                    let nrm = jobs.then_some(&ax.nrm);
+                    if addr.starts_with("relay://") {
+                        eprintln!("waiting for peers at {addr}");
+                        loop {
+                            match mesh::serve_relay(&addr, &ax.store, &key, nrm, std::time::Duration::from_secs(25)) {
+                                Ok(None) => {}
+                                Ok(Some(st)) => log(&addr, Ok(st))?,
+                                Err(e) => {
+                                    log(&addr, Err(e))?;
+                                    std::thread::sleep(std::time::Duration::from_secs(5));
+                                }
                             }
                         }
                     }
+                    let l = platform::listen(&addr)?;
+                    eprintln!("listening on {}", l.local_addr()?);
+                    loop {
+                        log("mesh-peer", mesh::serve_one(&l, &ax.store, &key, nrm))?;
+                    }
+                }
+                MeshAction::Relay => {
+                    let l = platform::listen(&need()?)?;
+                    eprintln!("relaying on {} (sees only ciphertext)", l.local_addr()?);
+                    mesh::relay(&l)?;
                 }
             }
         }
@@ -191,10 +239,13 @@ fn main() -> Result<()> {
                     std::process::exit(r.exit.unwrap_or(1));
                 }
                 AppAction::List => {
-                    for (n, granted, required) in apps::list(&ax.home)? {
-                        println!("{n}: granted [{}] requires [{}]", granted.join(", "), required.join(", "));
+                    for a in apps::list(&ax.home)? {
+                        println!("{}: granted [{}] requires [{}] publisher {}", a.name, a.granted.join(", "), a.required.join(", "),
+                                 a.publisher.as_deref().unwrap_or("(unsigned)"));
                     }
                 }
+                AppAction::Sign => println!("signed by {}", apps::sign(&ax.home, &PathBuf::from(name_or()?))?),
+                AppAction::Trust => apps::trust(&ax.home, &name_or()?)?,
                 AppAction::Revoke => {
                     let n = apps::revoke(&ax.home, &name_or()?, rest.first().map(String::as_str))?;
                     println!("revoked {n} grant(s)");

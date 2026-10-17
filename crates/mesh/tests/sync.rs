@@ -28,7 +28,7 @@ fn round(a: &Store, b: Store, ka: &Key, kb: &Key) -> (Result<Stats>, Result<Stat
     let addr = l.local_addr().unwrap();
     let kb = *kb;
     let h = std::thread::spawn(move || {
-        let r = serve_one(&l, &b, &kb);
+        let r = serve_one(&l, &b, &kb, None);
         (r, b)
     });
     let client = sync(&addr, a, ka);
@@ -132,4 +132,58 @@ fn edges_and_tombstones_merge_in_any_order() {
         assert_eq!(s.edge_rows().unwrap().len(), 1, "newer edge beats older tombstone");
         assert!(s.tombstone_rows().unwrap().is_empty());
     }
+}
+
+#[test]
+fn relay_failover_and_offload() {
+    let (ta, tb) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let a = store(ta.path(), 4, &[("a1.md", "alpha via relay")]);
+    let key = [3u8; 32];
+    let rl = platform::listen("127.0.0.1:0").unwrap();
+    let relay = format!("relay://{}", rl.local_addr().unwrap());
+    std::thread::spawn(move || mesh::relay(&rl));
+
+    // nobody parked yet: the dialer is told at once instead of hanging
+    let err = sync(&relay, &a, &key).unwrap_err().to_string();
+    assert!(err.contains("no peer waiting"), "{err}");
+    let idle = Store::open(&tb.path().join("idle.db"), 4).unwrap();
+    assert!(mesh::serve_relay(&relay, &idle, &key, None, std::time::Duration::from_millis(200)).unwrap().is_none());
+
+    // B parks at the relay; A fails over from a dead address to the relay
+    let (r2, tbp) = (relay.clone(), tb.path().to_path_buf());
+    let h = std::thread::spawn(move || {
+        let b = Store::open(&tbp.join("axiom.db"), 4).unwrap();
+        let st = mesh::serve_relay(&r2, &b, &key, None, std::time::Duration::from_secs(10)).unwrap();
+        (st, b.object_ids().unwrap().len())
+    });
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    let st = sync(&format!("127.0.0.1:1,{relay}"), &a, &key).unwrap();
+    assert_eq!(st.objects_out, 1);
+    let (served, n) = h.join().unwrap();
+    assert_eq!((served.unwrap().objects_in, n), (1, 1));
+
+    // offload: B embeds for A through its own NRM, logged as one job
+    let nrm = core_ai::Nrm::new(std::sync::Arc::new(core_ai::LocalBackend::offline()), 30.0);
+    let l = platform::listen("127.0.0.1:0").unwrap();
+    let addr = l.local_addr().unwrap();
+    let audited = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+    let h = std::thread::spawn(move || {
+        let b = Store::open(&tempfile::tempdir().unwrap().path().join("b.db"), 4).unwrap();
+        (0..2).map(|_| serve_one(&l, &b, &key, Some(&nrm)).unwrap().jobs).sum::<usize>()
+    });
+    let au = audited.clone();
+    let remote = mesh::RemoteBackend::connect(&addr, key, Box::new(move |n| *au.lock().unwrap() += n)).unwrap();
+    use core_ai::NpuBackend;
+    let local = core_ai::LocalBackend::offline();
+    assert_eq!(remote.dim(), local.dim());
+    let texts = vec!["quarterly revenue".to_string()];
+    assert_eq!(remote.embed(&texts).unwrap(), local.embed(&texts).unwrap());
+    assert_eq!((h.join().unwrap(), *audited.lock().unwrap()), (2, 17));
+
+    // a device without a broker refuses jobs
+    let l = platform::listen("127.0.0.1:0").unwrap();
+    let addr = l.local_addr().unwrap();
+    let h = std::thread::spawn(move || serve_one(&l, &Store::open(&tempfile::tempdir().unwrap().path().join("c.db"), 4).unwrap(), &key, None).is_err());
+    assert!(mesh::RemoteBackend::connect(&addr, key, Box::new(|_| {})).is_err());
+    assert!(h.join().unwrap());
 }

@@ -101,6 +101,20 @@ fn gate() {
     let n: i64 = ax.store.db.query_row("select count(*) from edges where type='derived_from'", [], |r| r.get(0)).unwrap();
     assert_eq!(n as usize, r.hits.len());
 
+    // session state lives in the graph (so it roams): workspaces, active workspace, clipboard
+    ax.save_workspace("money", "finance docs").unwrap();
+    ax.save_workspace("money", "finance revenue").unwrap();
+    assert_eq!(ax.workspaces().unwrap(), [("money".to_string(), "finance revenue".to_string())]);
+    assert_eq!(ax.open_workspace(None, now).unwrap_err().to_string(), "no active workspace");
+    ax.open_workspace(Some("money"), now).unwrap();
+    assert_eq!(ax.active_workspace().as_deref(), Some("money"));
+    let n: i64 = ax.store.db.query_row("select count(*) from tombstones where src='workspace:money'", [], |r| r.get(0)).unwrap();
+    assert_eq!(n, 1, "the replaced query leaves a tombstone so the edit syncs");
+    assert_eq!(ax.clip_current().unwrap(), None);
+    ax.clip_push("first", now).unwrap();
+    ax.clip_push("second copy", now).unwrap();
+    assert_eq!(ax.clip_current().unwrap().as_deref(), Some("second copy"));
+
     // snapshot + rollback
     let snap = ax.store.snapshot("before").unwrap();
     ax.store.tag(&oid, "vip", 1.0, "user").unwrap();

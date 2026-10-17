@@ -1,0 +1,12 @@
+[package]
+name = "axiom-app"
+version = "0.1.0"
+edition = "2024"
+description = "SDK for Axiom apps: one `call` for native (stdin/stdout) and wasm32 (axiom.call import) apps"
+
+[dependencies]
+serde_json = "1.0.151"
+
+[[example]]
+name = "hello_wasm"
+crate-type = ["cdylib"]

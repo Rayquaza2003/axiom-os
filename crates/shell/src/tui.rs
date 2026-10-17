@@ -28,7 +28,11 @@ fn event_loop(term: &mut DefaultTerminal, ax: &Axiom) -> Result<()> {
         }
         match k.code {
             KeyCode::Esc => return Ok(()),
-            KeyCode::Char('s') if k.modifiers.contains(KeyModifiers::CONTROL) => platform::speak(&out),
+            KeyCode::Char('s') if k.modifiers.contains(KeyModifiers::CONTROL) => {
+                if let Err(e) = ax.speak(&out) {
+                    out = format!("error: {e}");
+                }
+            }
             KeyCode::Enter => {
                 out = match ax.ask(&input, platform::now(), None, false) {
                     Ok((r, t)) => format!("[{}, confidence {:.2}, tags {:?}]\n{t}", mode_name(&r.mode), r.plan.confidence, r.plan.tags),

@@ -136,6 +136,29 @@ pub fn write_secret(path: &Path, bytes: &[u8]) -> Result<()> {
     Ok(f.write_all(bytes)?)
 }
 
+pub fn write_file(path: &Path, bytes: &[u8]) -> Result<()> {
+    Ok(std::fs::write(path, bytes)?)
+}
+
+pub fn rename(from: &Path, to: &Path) -> Result<()> {
+    Ok(std::fs::rename(from, to)?)
+}
+
+/// Every regular file under `root`, dot-entries included, symlinks skipped (what `copy_tree` copies).
+pub fn walk_all(root: &Path) -> Result<Vec<PathBuf>> {
+    let mut out = vec![];
+    for e in std::fs::read_dir(root)?.flatten() {
+        let ft = e.file_type()?;
+        if ft.is_dir() {
+            out.extend(walk_all(&e.path())?);
+        } else if ft.is_file() {
+            out.push(e.path());
+        }
+    }
+    out.sort();
+    Ok(out)
+}
+
 pub fn read_file(path: &Path) -> Result<Vec<u8>> {
     Ok(std::fs::read(path)?)
 }
@@ -163,8 +186,32 @@ pub fn listen(addr: &str) -> Result<Listener> {
     Ok(Listener(std::net::TcpListener::bind(addr)?))
 }
 
+/// Connects to the first reachable address `addr` resolves to, 5s per attempt.
 pub fn dial(addr: &str) -> Result<Conn> {
-    conn(std::net::TcpStream::connect(addr)?)
+    use std::net::ToSocketAddrs;
+    let mut last = anyhow!("{addr}: resolves to no address");
+    for a in addr.to_socket_addrs()? {
+        match std::net::TcpStream::connect_timeout(&a, Duration::from_secs(5)) {
+            Ok(s) => return conn(s),
+            Err(e) => last = anyhow!("{addr}: {e}"),
+        }
+    }
+    Err(last)
+}
+
+/// Pipes bytes both ways between two connections until either side closes.
+pub fn splice(a: Conn, b: Conn) -> Result<()> {
+    use std::net::Shutdown;
+    let (mut ar, mut bw) = (a.0.try_clone()?, b.0.try_clone()?);
+    let t = std::thread::spawn(move || {
+        let _ = std::io::copy(&mut ar, &mut bw);
+        let _ = bw.shutdown(Shutdown::Write);
+    });
+    let (mut br, mut aw) = (b.0, a.0);
+    let _ = std::io::copy(&mut br, &mut aw);
+    let _ = aw.shutdown(Shutdown::Write);
+    let _ = t.join();
+    Ok(())
 }
 
 impl Listener {
@@ -197,6 +244,49 @@ impl Conn {
         self.0.read_exact(&mut b)?;
         Ok(b)
     }
+
+    /// Like `recv`, but `None` if nothing arrives within `wait`.
+    pub fn recv_within(&mut self, max: usize, wait: Duration) -> Result<Option<Vec<u8>>> {
+        use std::io::ErrorKind::{TimedOut, WouldBlock};
+        self.0.set_read_timeout(Some(wait))?;
+        let r = self.0.peek(&mut [0u8; 1]);
+        self.0.set_read_timeout(Some(NET_TIMEOUT))?;
+        match r {
+            Err(e) if matches!(e.kind(), WouldBlock | TimedOut) => Ok(None),
+            Err(e) => Err(e.into()),
+            Ok(0) => Err(anyhow!("connection closed")),
+            Ok(_) => self.recv(max).map(Some),
+        }
+    }
+}
+
+// --- clipboard ------------------------------------------------------------------
+
+const CLIP_GET: &[&[&str]] = &[&["pbpaste"], &["wl-paste", "--no-newline"], &["xclip", "-selection", "clipboard", "-o"]];
+const CLIP_SET: &[&[&str]] = &[&["pbcopy"], &["wl-copy"], &["xclip", "-selection", "clipboard"]];
+
+pub fn clipboard_get() -> Result<String> {
+    for c in CLIP_GET {
+        if let Ok(o) = std::process::Command::new(c[0]).args(&c[1..]).output() {
+            if o.status.success() {
+                return Ok(String::from_utf8_lossy(&o.stdout).into_owned());
+            }
+        }
+    }
+    Err(anyhow!("no clipboard tool found (pbpaste, wl-paste or xclip)"))
+}
+
+pub fn clipboard_set(text: &str) -> Result<()> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    for c in CLIP_SET {
+        let Ok(mut child) = Command::new(c[0]).args(&c[1..]).stdin(Stdio::piped()).spawn() else { continue };
+        child.stdin.take().ok_or_else(|| anyhow!("no stdin"))?.write_all(text.as_bytes())?;
+        if child.wait()?.success() {
+            return Ok(());
+        }
+    }
+    Err(anyhow!("no clipboard tool found (pbcopy, wl-copy or xclip)"))
 }
 
 // --- sandboxed child processes ------------------------------------------------
@@ -214,24 +304,35 @@ fn sbpath(p: &Path) -> String {
 }
 
 /// Run `cmd` (working directory `cwd`) under the OS sandbox: no network, no file writes, no reads of
-/// `hidden` except `cwd` itself.
+/// `hidden` except `cwd` itself. macOS: sandbox-exec. Linux: bubblewrap (read-only root, `hidden`
+/// masked by an empty tmpfs, no network namespace).
 ///
-/// ponytail: deny-list profile (macOS sandbox-exec). A full allow-list needs per-interpreter paths;
+/// ponytail: deny-list profile on macOS. A full allow-list needs per-interpreter paths;
 /// fails closed when the host has no sandbox, never runs the app unconfined.
 pub fn spawn_sandboxed(cmd: &[String], cwd: &Path, hidden: &Path) -> Result<Proc> {
     use std::io::BufRead;
     use std::process::{Command, Stdio};
-    if !Path::new("/usr/bin/sandbox-exec").exists() {
+    let mut c = if Path::new("/usr/bin/sandbox-exec").exists() {
+        let profile = format!(
+            "(version 1)(allow default)(deny network*)(deny file-write*)\
+             (allow file-write* (literal \"/dev/null\") (literal \"/dev/tty\"))\
+             (deny file-read* (subpath \"{}\"))(allow file-read* (subpath \"{}\"))",
+            sbpath(hidden), sbpath(cwd)
+        );
+        let mut c = Command::new("/usr/bin/sandbox-exec");
+        c.arg("-p").arg(profile);
+        c
+    } else if let Some(bwrap) = ["/usr/bin/bwrap", "/bin/bwrap"].into_iter().find(|p| Path::new(p).exists()) {
+        let (hidden, cwd) = (std::fs::canonicalize(hidden)?, std::fs::canonicalize(cwd)?);
+        let mut c = Command::new(bwrap);
+        c.args(["--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs"]).arg(&hidden)
+            .arg("--ro-bind").arg(&cwd).arg(&cwd)
+            .args(["--unshare-net", "--unshare-pid", "--die-with-parent", "--new-session", "--"]);
+        c
+    } else {
         return Err(anyhow!("no OS sandbox available on this host (refusing to run app unconfined)"));
-    }
-    let profile = format!(
-        "(version 1)(allow default)(deny network*)(deny file-write*)\
-         (allow file-write* (literal \"/dev/null\") (literal \"/dev/tty\"))\
-         (deny file-read* (subpath \"{}\"))(allow file-read* (subpath \"{}\"))",
-        sbpath(hidden), sbpath(cwd)
-    );
-    let mut child = Command::new("/usr/bin/sandbox-exec")
-        .arg("-p").arg(profile).args(cmd).current_dir(cwd)
+    };
+    let mut child = c.args(cmd).current_dir(cwd)
         .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit()).spawn()?;
     let stdin = child.stdin.take().ok_or_else(|| anyhow!("no stdin"))?;
     let out = child.stdout.take().ok_or_else(|| anyhow!("no stdout"))?;

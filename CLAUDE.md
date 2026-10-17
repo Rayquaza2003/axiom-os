@@ -6,14 +6,18 @@ Architecture blueprint in `specs/` plus a working personal prototype: Rust works
 
 - Setup: `. ~/.cargo/env`
 - Gate test: `cargo test`
-- CLI: `cargo run --release -- import DIR | ask "summarize Q3 docs" [--cloud URL] [--save] [--speak] | tag | untag | ws | brief [--speak] | snapshot | rollback | egress log|allow|budget | tui | mesh key|join HEX|serve ADDR|sync ADDR | app install DIR|run NAME [ARGS]|list|revoke NAME [CAP]`
+- CLI: `cargo run --release -- import DIR | ask "summarize Q3 docs" [--cloud URL] [--save] [--speak] | tag | untag | ws save|open|list | clip push|pull|show | brief [--speak] | snapshot | rollback | egress log|allow|budget | tui | mesh key|join HEX|serve ADDR [--jobs]|sync ADDR[,ADDR]|relay ADDR | app install DIR|run NAME [ARGS]|list|revoke NAME [CAP]|sign DIR|trust KEY`
 - Data lives in `$AXIOM_HOME` (default `~/.axiom`).
 - Offline by default (lexical hash embeddings, extractive summaries). For real models point at any OpenAI-compatible server (llama-server with Metal, Ollama): `AXIOM_LLM_MODEL=<model>` for summaries, `AXIOM_EMBED_MODEL=<model>` for semantic vectors, `AXIOM_LLM_URL` / `AXIOM_EMBED_URL` (default `http://localhost:11434`). A store is tied to one embedding dimension.
 
 ## Mesh and apps
 
 - Mesh pairing: `axiom mesh key` on device A, `axiom mesh join <hex>` on device B (shared 32-byte key, used as the PSK of a Noise NNpsk0 handshake). `mesh serve 0.0.0.0:7777` on one, `mesh sync host:7777` on the other. Objects union, edges last-writer-wins, deletions sync as tombstones, file names sync as `named` edges. Mesh traffic is logged in the egress audit log (kind `mesh`).
-- Apps: a directory with `manifest.json` (`{"name","cmd":[...],"requires":["search"|"tag"|"generate"|"egress:<host>"]}`). `app install` asks per capability (non-interactive = grants nothing). Apps run under macOS `sandbox-exec` (no network, no writes, no reads of `$AXIOM_HOME`) and talk JSON lines to the broker in `crates/shell/src/apps.rs`. The sandbox needs macOS; elsewhere apps refuse to run.
+- Addresses: `relay://host:port` meets the peer at a relay (`axiom mesh relay 0.0.0.0:7778` on any reachable box; it sees only ciphertext). A comma list fails over in order (LAN first, relay second).
+- Session state roams: workspaces, the active workspace (`ws open` with no name) and the clipboard (`clip push` / `clip pull`) are graph edges, so they sync.
+- Resource broker: `mesh serve ADDR --jobs` runs embed/generate/speak for peers at BACKGROUND priority. `AXIOM_OFFLOAD=<addr>` runs this device's inference on that peer; `AXIOM_AUDIO_SINK=<addr>` plays `--speak` there.
+- Apps: a directory with `manifest.json` (`{"name","cmd":[...] or "wasm":"file.wasm","requires":["search"|"search:tag=<t>"|"tag"|"tag:tag=<t>"|"generate"|"egress:<host>"]}`). `app install` asks per capability (non-interactive = grants nothing); `generate` expires after 1h. Native apps run under macOS `sandbox-exec` or Linux `bwrap` (no network, no writes, no reads of `$AXIOM_HOME`; untested on Linux), elsewhere they refuse to run. Wasm apps run in-process (wasmi, fuel-limited) on any host. Both talk JSON to the broker in `crates/shell/src/apps.rs`; `crates/app-sdk` (`axiom-app`) wraps it for Rust.
+- Signed apps: `app sign DIR` (key in `$AXIOM_HOME/publisher.key`), `app trust KEY`. A signed bundle needs a trusted publisher; an update needs the same publisher; unsigned bundles cannot replace signed ones.
 
 ## Portability rules (so the layer can move to another kernel)
 
@@ -29,4 +33,5 @@ Architecture blueprint in `specs/` plus a working personal prototype: Rust works
 - `core-data` P2: Blake3 + FastCDC objects, graph edges, passage vectors, snapshots (one SQLite file).
 - `core-ai` P3: `NpuBackend`/`LocalBackend`, `Nrm` (priority tiers + aging), planner, summarizer, egress firewall.
 - `mesh` P4: encrypted two-device sync (`sync`, `serve_one`).
-- `shell` P5/P6: `Axiom` facade, CLI (`axiom`), TUI, `apps` sandbox broker.
+- `shell` P5/P6: `Axiom` facade, CLI (`axiom`), TUI, `apps` sandbox broker + wasm runtime + signing.
+- `app-sdk` P6: `axiom-app` crate for app authors (native and wasm32).

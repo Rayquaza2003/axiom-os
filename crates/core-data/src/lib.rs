@@ -251,6 +251,21 @@ impl Store {
         Ok(true)
     }
 
+    /// Makes `dst` the only target of (src, ty). Replaced edges leave tombstones, so the change replicates.
+    pub fn relink(&self, src: &str, ty: &str, dst: &str) -> Result<()> {
+        let mut st = self.db.prepare("select dst from edges where src=? and type=? and dst<>?")?;
+        let old = st.query_map([src, ty, dst], |r| r.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?;
+        for d in old {
+            self.unlink(src, ty, &d)?;
+        }
+        self.link(src, ty, dst, 1.0, "user")
+    }
+
+    /// Newest target of (src, ty). Two devices may each have set one before syncing; the later wins.
+    pub fn target(&self, src: &str, ty: &str) -> Option<String> {
+        self.db.query_row("select dst from edges where src=? and type=? order by ts desc limit 1", [src, ty], |r| r.get(0)).ok()
+    }
+
     pub fn untag(&self, oid: &str, tag: &str) -> Result<bool> {
         self.unlink(oid, "tagged", &format!("tag:{}", norm_tag(tag)))
     }

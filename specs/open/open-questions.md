@@ -22,14 +22,16 @@ kernel questions are deferred until the prototype proves out.
 | BS.2 hardware | Apple Silicon Mac for the prototype; RK3588 for the first bare-metal target. |
 | BT.1 build | Cargo workspace for the prototype; Bazel only when a multi-language kernel build exists. |
 
-Prototype status: Rust workspace (`platform`, `core-data`, `core-ai`, `mesh`, `shell`). Built: P2 (Blake3 + FastCDC objects, graph
-with replicated deletions, copy-on-write snapshots), P3 (NRM with chunk-level preemption, rule planner refined by an LLM when one is
-configured, egress firewall), P4 subset (Noise NNpsk0 pairing with a shared key; objects union, edges LWW, tombstones, file names
-replicate), P5 subset (CLI, TUI, briefing), P6 subset (deny-by-default capability broker with a 1h TTL on `generate`, macOS sandbox-exec).
-Not built: kernel and drivers (P0/P1), relay/NAT traversal, QR pairing, state roaming, resource brokerage, clipboard/audio, network
-failover, native/WASM app SDKs, app store, per-object capability scoping, a Linux app sandbox.
+Prototype status: Rust workspace (`platform`, `core-data`, `core-ai`, `mesh`, `shell`, `app-sdk`). Built: P2 (Blake3 + FastCDC objects,
+graph with replicated deletions, copy-on-write snapshots), P3 (NRM with chunk-level preemption, rule planner refined by an LLM when one is
+configured, egress firewall), P4 (Noise NNpsk0 pairing with a shared key shown as hex + QR; objects union, edges LWW, tombstones;
+relay for NAT, address-list failover; session roaming of workspaces, active workspace and clipboard; resource broker for
+embed/generate/speak offload), P5 subset (CLI, TUI, briefing), P6 (capability broker with tag-scoped and expiring grants; native apps
+under sandbox-exec or bwrap; wasm apps on wasmi; Rust SDK; ed25519-signed bundles with trusted publishers and same-publisher updates).
+Not built: kernel and drivers (P0/P1, by decision P0.1), UDP hole punching, MPTCP / cellular failover, credit limits (jobs are counted,
+not capped), Swift/Kotlin SDKs, WebGPU/WebNN for wasm apps, a hosted app catalog, gaze-based audio routing.
 Known gaps: offline embeddings are lexical (semantic needs an OpenAI-compatible server); an LLM `generate` job cannot be preempted;
-snapshots are only O(1) on copy-on-write filesystems (APFS, btrfs, XFS), elsewhere they are a full copy.
+snapshots are only O(1) on copy-on-write filesystems; the Linux sandbox path is untested; wasm apps get a fixed fuel budget (~2s CPU).
 ---
 
 ## P0 — Kernel
