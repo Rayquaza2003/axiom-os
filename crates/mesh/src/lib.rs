@@ -1,16 +1,15 @@
 //! P4 mesh: encrypted two-device replication of the object store and graph.
 //!
 //! Objects are content-addressed, so replication is a set union and cannot conflict. Edges merge
-//! last-writer-wins per (src, type, dst). Devices pair by sharing one 32-byte key.
+//! last-writer-wins per (src, type, dst); deletions travel as tombstones. Devices pair by sharing one
+//! 32-byte key, used as the PSK of a Noise NNpsk0 handshake (mutual auth, forward secrecy, no replay).
 //!
-//! ponytail: pre-shared key + full id/edge exchange (O(n) per sync) instead of Noise NK + QR join and
-//! vector-clock deltas; no relay/NAT traversal (dial a reachable address). Replace when more than a
-//! handful of devices or ~1M objects are in play.
+//! ponytail: full id/edge exchange (O(n) per sync) instead of vector-clock deltas; no relay/NAT
+//! traversal (dial a reachable address). More than two devices converge by pairwise syncs. Replace when
+//! more than a handful of devices or ~1M objects are in play.
 use anyhow::{anyhow, bail, Result};
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
-use chacha20poly1305::aead::{Aead, KeyInit};
-use chacha20poly1305::{ChaCha20Poly1305, Key as AeadKey, Nonce};
-use core_data::{EdgeRow, ObjectBundle, Store};
+use core_data::{EdgeRow, ObjectBundle, Store, Tombstone};
 use platform::{Conn, Listener};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -20,9 +19,16 @@ pub type Key = [u8; 32];
 
 const MAX_FRAME: usize = 64 << 20;
 const BATCH: usize = 2000;
+const NOISE: &str = "Noise_NNpsk0_25519_ChaChaPoly_BLAKE2s";
+const NOISE_MAX: usize = 65535;
+/// Plaintext per Noise message: max length minus the AEAD tag and our one-byte "more follows" flag.
+const PIECE: usize = NOISE_MAX - 16 - 1;
 
 #[derive(Serialize, Deserialize)]
 struct WEdge(String, String, String, f64, String, f64);
+
+#[derive(Serialize, Deserialize)]
+struct WTomb(String, String, String, f64);
 
 #[derive(Serialize, Deserialize)]
 struct WObj {
@@ -39,6 +45,7 @@ enum Msg {
     Hello { dim: usize },
     Ids { ids: Vec<String> },
     Edges { rows: Vec<WEdge> },
+    Tombs { rows: Vec<WTomb> },
     Obj { o: WObj },
     End { want: Vec<String> },
     Ack { objects: usize },
@@ -83,29 +90,55 @@ pub fn join(home: &Path, hex: &str) -> Result<()> {
 
 struct Chan {
     conn: Conn,
-    cipher: ChaCha20Poly1305,
+    noise: snow::TransportState,
+    buf: Vec<u8>,
 }
 
 impl Chan {
-    fn new(conn: Conn, key: &Key) -> Chan {
-        Chan { conn, cipher: ChaCha20Poly1305::new(&AeadKey::from(*key)) }
+    /// NNpsk0: -> psk, e  /  <- e, ee. A wrong key fails the first read on the responder.
+    fn handshake(mut conn: Conn, key: &Key, initiator: bool) -> Result<Chan> {
+        let b = snow::Builder::new(NOISE.parse()?).psk(0, key)?;
+        let mut hs = if initiator { b.build_initiator()? } else { b.build_responder()? };
+        let mut buf = vec![0u8; NOISE_MAX];
+        let auth = |_| anyhow!("authentication failed (wrong key?)");
+        if initiator {
+            let n = hs.write_message(&[], &mut buf)?;
+            conn.send(&buf[..n])?;
+            hs.read_message(&conn.recv(NOISE_MAX)?, &mut buf).map_err(auth)?;
+        } else {
+            hs.read_message(&conn.recv(NOISE_MAX)?, &mut buf).map_err(auth)?;
+            let n = hs.write_message(&[], &mut buf)?;
+            conn.send(&buf[..n])?;
+        }
+        Ok(Chan { conn, noise: hs.into_transport_mode()?, buf })
     }
 
     fn send(&mut self, m: &Msg) -> Result<()> {
-        let nonce = platform::random_bytes::<12>()?;
-        let ct = self.cipher.encrypt(&Nonce::from(nonce), serde_json::to_vec(m)?.as_slice())
-            .map_err(|_| anyhow!("encrypt failed"))?;
-        self.conn.send(&[nonce.as_slice(), &ct].concat())
+        let pt = serde_json::to_vec(m)?;
+        let mut pieces = pt.chunks(PIECE).peekable();
+        while let Some(p) = pieces.next() {
+            let n = self.noise.write_message(&[&[pieces.peek().is_some() as u8], p].concat(), &mut self.buf)?;
+            self.conn.send(&self.buf[..n])?;
+        }
+        Ok(())
     }
 
     fn recv(&mut self) -> Result<Msg> {
-        let b = self.conn.recv(MAX_FRAME)?;
-        if b.len() < 12 {
-            bail!("short frame");
+        let mut pt = vec![];
+        loop {
+            let ct = self.conn.recv(NOISE_MAX)?;
+            let n = self.noise.read_message(&ct, &mut self.buf).map_err(|_| anyhow!("authentication failed"))?;
+            if n == 0 {
+                bail!("empty frame");
+            }
+            pt.extend_from_slice(&self.buf[1..n]);
+            if pt.len() > MAX_FRAME {
+                bail!("message exceeds {MAX_FRAME} bytes");
+            }
+            if self.buf[0] == 0 {
+                return Ok(serde_json::from_slice(&pt)?);
+            }
         }
-        let nonce: [u8; 12] = b[..12].try_into()?;
-        let pt = self.cipher.decrypt(&Nonce::from(nonce), &b[12..]).map_err(|_| anyhow!("authentication failed (wrong key?)"))?;
-        Ok(serde_json::from_slice(&pt)?)
     }
 }
 
@@ -140,6 +173,10 @@ fn send_edges(c: &mut Chan, store: &Store) -> Result<()> {
     for r in rows.chunks(BATCH) {
         c.send(&Msg::Edges { rows: r.iter().map(|e| WEdge(e.0.clone(), e.1.clone(), e.2.clone(), e.3, e.4.clone(), e.5)).collect() })?;
     }
+    let tombs: Vec<WTomb> = store.tombstone_rows()?.into_iter().map(|t| WTomb(t.src, t.ty, t.dst, t.ts)).collect();
+    for r in tombs.chunks(BATCH) {
+        c.send(&Msg::Tombs { rows: r.iter().map(|t| WTomb(t.0.clone(), t.1.clone(), t.2.clone(), t.3)).collect() })?;
+    }
     Ok(())
 }
 
@@ -165,6 +202,12 @@ fn receive(c: &mut Chan, store: &Store, stats: &mut Stats) -> Result<(HashSet<St
         match c.recv()? {
             Msg::Ids { ids: v } => ids.extend(v),
             Msg::Edges { rows } => stats.edges_in += merge_edges(store, rows)?,
+            Msg::Tombs { rows } => {
+                stats.edges_in += rows.len();
+                for WTomb(src, ty, dst, ts) in rows {
+                    store.merge_tombstone(&Tombstone { src, ty, dst, ts })?;
+                }
+            }
             Msg::Obj { o } => {
                 store.import_object(&from_wire(o)?)?;
                 stats.objects_in += 1;
@@ -187,7 +230,7 @@ fn check_dim(store: &Store, m: Msg) -> Result<()> {
 
 /// Dial a peer and make both stores equal.
 pub fn sync(addr: &str, store: &Store, key: &Key) -> Result<Stats> {
-    let mut c = Chan::new(platform::dial(addr)?, key);
+    let mut c = Chan::handshake(platform::dial(addr)?, key, true)?;
     c.send(&Msg::Hello { dim: store.dim() })?;
     send_ids_edges(&mut c, store)?;
     c.send(&Msg::End { want: vec![] })?;
@@ -205,7 +248,7 @@ pub fn sync(addr: &str, store: &Store, key: &Key) -> Result<Stats> {
 
 /// Accept one peer and sync with it.
 pub fn serve_one(l: &Listener, store: &Store, key: &Key) -> Result<Stats> {
-    let mut c = Chan::new(l.accept()?, key);
+    let mut c = Chan::handshake(l.accept()?, key, false)?;
     check_dim(store, c.recv()?)?;
     let mut stats = Stats::default();
     let (theirs, _) = store.atomic(|| receive(&mut c, store, &mut stats))?;

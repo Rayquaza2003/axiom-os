@@ -1,6 +1,6 @@
 //! P2 data plane: content-defined-chunked objects (Blake3) + relationship graph + passage vectors in one SQLite file.
 //!
-//! One transaction covers objects, edges and vectors. A snapshot is a `VACUUM INTO` copy.
+//! One transaction covers objects, edges and vectors. A snapshot is a file clone (copy-on-write on APFS/btrfs).
 use anyhow::{anyhow, bail, Result};
 use rusqlite::{params, params_from_iter, types::Value, Connection};
 use std::collections::HashMap;
@@ -15,6 +15,7 @@ create table if not exists names(path text primary key, obj text, mtime real);
 create table if not exists edges(src text, type text, dst text, conf real default 1.0,
   source text default 'user', ts real, primary key(src, type, dst));
 create index if not exists edges_dst on edges(dst, type);
+create table if not exists tombstones(src text, type text, dst text, ts real, primary key(src, type, dst));
 create table if not exists passages(id integer primary key, obj text, ord integer, text text, emb blob);
 create index if not exists passages_obj on passages(obj);
 create virtual table if not exists fts using fts5(text, content='passages', content_rowid='id');
@@ -126,7 +127,28 @@ impl Store {
             Some(d) if d != dim.to_string() => bail!("store was built with {d}-dim embeddings, embedder gives {dim}"),
             _ => {}
         }
-        Ok(Store { db, path: path.to_path_buf(), dim })
+        let s = Store { db, path: path.to_path_buf(), dim };
+        s.backfill_names()?;
+        Ok(s)
+    }
+
+    /// File names live in the local `names` table, which does not replicate; a `named` edge does.
+    /// Adds the edge for objects imported before it existed.
+    fn backfill_names(&self) -> Result<()> {
+        let mut st = self.db.prepare(
+            "select path, obj from names n where not exists(select 1 from edges where src=n.obj and type='named')")?;
+        let rows = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?.collect::<Result<Vec<_>, _>>()?;
+        for (path, obj) in rows {
+            self.name(&obj, Path::new(&path))?;
+        }
+        Ok(())
+    }
+
+    fn name(&self, oid: &str, path: &Path) -> Result<()> {
+        match path.file_name() {
+            Some(f) => self.link(oid, "named", &format!("name:{}", f.to_string_lossy()), 1.0, "user"),
+            None => Ok(()),
+        }
     }
 
     // --- objects -----------------------------------------------------------
@@ -198,6 +220,7 @@ impl Store {
             let Some((raw, text)) = platform::read_text(&path) else { continue };
             let oid = self.put(&raw, e.mtime)?;
             self.db.execute("insert or replace into names values(?,?,?)", params![key, oid, e.mtime])?;
+            self.name(&oid, &path)?;
             self.index(&oid, &text, embed)?;
             let parent = path.parent().and_then(|p| p.file_name()).map(|s| s.to_string_lossy().to_string());
             if let Some(parent) = parent {
@@ -215,7 +238,21 @@ impl Store {
     pub fn link(&self, src: &str, ty: &str, dst: &str, conf: f64, source: &str) -> Result<()> {
         self.db.execute("insert or replace into edges values(?,?,?,?,?,?)",
                         params![src, ty, dst, conf, source, platform::now()])?;
+        self.db.execute("delete from tombstones where src=? and type=? and dst=?", [src, ty, dst])?;
         Ok(())
+    }
+
+    /// Deletes an edge and leaves a tombstone so the deletion replicates. Returns false if no such edge.
+    pub fn unlink(&self, src: &str, ty: &str, dst: &str) -> Result<bool> {
+        if self.db.execute("delete from edges where src=? and type=? and dst=?", [src, ty, dst])? == 0 {
+            return Ok(false);
+        }
+        self.db.execute("insert or replace into tombstones values(?,?,?,?)", params![src, ty, dst, platform::now()])?;
+        Ok(true)
+    }
+
+    pub fn untag(&self, oid: &str, tag: &str) -> Result<bool> {
+        self.unlink(oid, "tagged", &format!("tag:{}", norm_tag(tag)))
     }
 
     pub fn tag(&self, oid: &str, tag: &str, conf: f64, source: &str) -> Result<()> {
@@ -251,6 +288,10 @@ impl Store {
     pub fn title(&self, oid: &str) -> String {
         if let Ok(p) = self.db.query_row("select path from names where obj=? limit 1", [oid], |r| r.get::<_, String>(0)) {
             return Path::new(&p).file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or(p);
+        }
+        if let Ok(n) = self.db.query_row("select substr(dst,6) from edges where src=? and type='named' order by ts desc limit 1",
+                                         [oid], |r| r.get::<_, String>(0)) {
+            return n;
         }
         match self.db.query_row("select text from passages where obj=? order by ord limit 1", [oid], |r| r.get::<_, String>(0)) {
             Ok(t) => t.lines().next().unwrap_or("").chars().take(60).collect(),
@@ -347,10 +388,15 @@ impl Store {
         Ok(d)
     }
 
+    /// Clones the DB file. `platform::copy` is copy-on-write on APFS/btrfs, so this is O(1) in store size there.
     pub fn snapshot(&self, label: &str) -> Result<PathBuf> {
         let path = self.snapdir()?.join(format!("{}-{}.db", (platform::now() * 1000.0) as u64, norm_tag(label)));
-        self.db.execute("vacuum into ?", [path.to_string_lossy().to_string()])?;
-        Ok(path)
+        // The write lock keeps other connections from committing mid-copy; with a rollback journal
+        // (not WAL) the main file then holds exactly the last committed state.
+        self.db.execute_batch("BEGIN IMMEDIATE")?;
+        let r = platform::copy(&self.path, &path);
+        self.db.execute_batch("COMMIT")?;
+        r.map(|_| path)
     }
 
     pub fn snapshots(&self) -> Result<Vec<PathBuf>> {
@@ -379,6 +425,14 @@ pub struct ObjectBundle {
     pub passages: Vec<(String, Vec<u8>)>,
 }
 
+/// A deleted edge. Deletion wins ties against an edge with the same timestamp.
+pub struct Tombstone {
+    pub src: String,
+    pub ty: String,
+    pub dst: String,
+    pub ts: f64,
+}
+
 pub struct EdgeRow {
     pub src: String,
     pub ty: String,
@@ -404,6 +458,12 @@ impl Store {
         let rows = st.query_map([], |r| Ok(EdgeRow {
             src: r.get(0)?, ty: r.get(1)?, dst: r.get(2)?, conf: r.get(3)?, source: r.get(4)?, ts: r.get(5)?,
         }))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    pub fn tombstone_rows(&self) -> Result<Vec<Tombstone>> {
+        let mut st = self.db.prepare("select src, type, dst, ts from tombstones")?;
+        let rows = st.query_map([], |r| Ok(Tombstone { src: r.get(0)?, ty: r.get(1)?, dst: r.get(2)?, ts: r.get(3)? }))?;
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
@@ -446,14 +506,25 @@ impl Store {
         Ok(())
     }
 
-    /// Last-writer-wins per (src, type, dst).
-    ///
-    /// ponytail: no tombstones, so edge deletion does not replicate (nothing deletes edges yet).
+    /// Last-writer-wins per (src, type, dst); loses to a tombstone at least as new.
     pub fn merge_edge(&self, e: &EdgeRow) -> Result<()> {
         self.db.execute(
-            "insert into edges values(?,?,?,?,?,?) on conflict(src, type, dst) do update set \
+            "insert into edges select ?1,?2,?3,?4,?5,?6 where not exists(select 1 from tombstones \
+             where src=?1 and type=?2 and dst=?3 and ts>=?6) on conflict(src, type, dst) do update set \
              conf=excluded.conf, source=excluded.source, ts=excluded.ts where excluded.ts > edges.ts",
             params![e.src, e.ty, e.dst, e.conf, e.source, e.ts])?;
+        self.db.execute("delete from tombstones where src=? and type=? and dst=? and ts<?", params![e.src, e.ty, e.dst, e.ts])?;
+        Ok(())
+    }
+
+    /// Deletes the edge unless it is strictly newer than the tombstone. Order-independent with `merge_edge`.
+    pub fn merge_tombstone(&self, t: &Tombstone) -> Result<()> {
+        self.db.execute("delete from edges where src=? and type=? and dst=? and ts<=?", params![t.src, t.ty, t.dst, t.ts])?;
+        self.db.execute(
+            "insert into tombstones select ?1,?2,?3,?4 where not exists(select 1 from edges \
+             where src=?1 and type=?2 and dst=?3 and ts>?4) on conflict(src, type, dst) do update set \
+             ts=excluded.ts where excluded.ts > tombstones.ts",
+            params![t.src, t.ty, t.dst, t.ts])?;
         Ok(())
     }
 

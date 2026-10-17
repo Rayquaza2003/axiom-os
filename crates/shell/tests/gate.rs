@@ -2,7 +2,7 @@
 use axiom_shell::Axiom;
 use chrono::{Local, NaiveDate, TimeZone};
 use core_ai::egress::Denied;
-use core_ai::{LocalBackend, Nrm, BACKGROUND, REALTIME};
+use core_ai::{LocalBackend, Nrm, NpuBackend, BACKGROUND, REALTIME};
 use serde_json::{json, Value};
 use std::path::Path;
 use std::sync::{mpsc, Arc, Mutex};
@@ -19,6 +19,20 @@ fn write(root: &Path, rel: &str, text: &str, when: f64) {
     std::fs::write(&p, text).unwrap();
     let f = std::fs::File::options().write(true).open(&p).unwrap();
     f.set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs_f64(when)).unwrap();
+}
+
+/// Takes 100ms per embed call and records the first text of each call.
+struct Slow(Mutex<Vec<String>>);
+
+impl NpuBackend for Slow {
+    fn dim(&self) -> usize { 1 }
+    fn embed(&self, texts: &[String]) -> anyhow::Result<Vec<Vec<f32>>> {
+        std::thread::sleep(Duration::from_millis(100));
+        self.0.lock().unwrap().push(texts[0].clone());
+        Ok(texts.iter().map(|_| vec![1.0]).collect())
+    }
+    fn has_llm(&self) -> bool { false }
+    fn generate(&self, _: &str) -> anyhow::Result<String> { unreachable!() }
 }
 
 fn denied(r: anyhow::Result<Value>) -> String {
@@ -124,4 +138,16 @@ fn gate() {
         (bg.recv().unwrap(), rt.recv().unwrap());
         assert_eq!(*order.lock().unwrap(), expect, "aging={aging}");
     }
+
+    // NRM: a realtime embed preempts a running background batch at the next chunk boundary
+    let slow = Arc::new(Slow(Mutex::new(vec![])));
+    let nrm = Arc::new(Nrm::new(slow.clone(), 30.0));
+    let n2 = nrm.clone();
+    let bg = std::thread::spawn(move || n2.embed(BACKGROUND, vec!["bg".to_string(); 64]).unwrap().len());
+    std::thread::sleep(Duration::from_millis(50));
+    nrm.embed(REALTIME, vec!["rt".into()]).unwrap();
+    assert_eq!(bg.join().unwrap(), 64, "chunked results come back whole and in order");
+    let calls = slow.0.lock().unwrap().clone();
+    assert_eq!(calls.len(), 5);
+    assert!(calls[..3].contains(&"rt".to_string()), "realtime waited for the whole batch: {calls:?}");
 }

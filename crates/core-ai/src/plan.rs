@@ -1,8 +1,8 @@
-//! Rule-based natural language -> structured query.
-//!
-//! ponytail: regex + known-tag matching; swap for an LLM parse once a local LLM is wired in.
+//! Natural language -> structured query. Rules always run (dates stay rule-based: deterministic);
+//! with an LLM configured, `refine` lets the model pick terms and tags.
 use chrono::{Datelike, Duration, Local, NaiveDate, NaiveDateTime, TimeZone};
 use regex::Regex;
+use serde_json::Value;
 
 const STOP: &[&str] = &[
     "docs", "doc", "documents", "document", "files", "file", "notes", "note", "my", "the", "all", "a", "an", "of",
@@ -90,5 +90,51 @@ pub fn plan(q: &str, known_tags: &[String], now: f64) -> Plan {
         t0: span.as_ref().map(|s| s.0),
         t1: span.as_ref().map(|s| s.1),
         confidence,
+    }
+}
+
+/// Prompt asking the LLM to parse `q` into terms and tags (dates are left to the rules).
+pub fn llm_prompt(q: &str, known_tags: &[String]) -> String {
+    let tags: Vec<&str> = known_tags.iter().take(200).map(String::as_str).collect();
+    format!("Turn this search request into JSON: {{\"terms\": [content words to search for], \"tags\": [the known \
+             tags the request is about], \"summarize\": true or false}}. Known tags: {}. Ignore dates. Reply with JSON only.\n\
+             Request: {q}", tags.join(", "))
+}
+
+/// Merge an LLM reply into the rule plan. Unknown tags are dropped; an unparseable reply keeps `base`.
+pub fn refine(base: Plan, reply: &str, known_tags: &[String]) -> Plan {
+    let json = reply.find('{').zip(reply.rfind('}')).filter(|(a, b)| a < b).map(|(a, b)| &reply[a..=b]);
+    let Some(v) = json.and_then(|j| serde_json::from_str::<Value>(j).ok()) else { return base };
+    let strs = |k: &str| -> Option<Vec<String>> {
+        v[k].as_array().map(|a| a.iter().filter_map(|x| x.as_str()).map(str::to_lowercase).collect())
+    };
+    let (Some(words), Some(tags)) = (strs("terms"), strs("tags")) else { return base };
+    let terms: Vec<String> = words.iter().flat_map(|w| w.split(|c: char| !c.is_alphanumeric()))
+        .filter(|w| !w.is_empty() && !STOP.contains(w)).map(String::from).collect();
+    let tags: Vec<String> = tags.iter().map(|t| core_data::norm_tag(t)).filter(|t| known_tags.contains(t)).collect();
+    let found = !terms.is_empty() || !tags.is_empty() || base.t0.is_some();
+    Plan {
+        summarize: base.summarize || v["summarize"].as_bool().unwrap_or(false),
+        terms,
+        tags,
+        confidence: if found { 0.9 } else { 0.0 },
+        ..base
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn refine_takes_llm_terms_and_known_tags_only() {
+        let known = vec!["finance".to_string(), "travel".to_string()];
+        let base = plan("money stuff from q3", &known, 1.79e9);
+        assert!(base.tags.is_empty() && base.t0.is_some());
+        let p = refine(base.clone(), "Sure:\n{\"terms\": [\"Revenue\", \"the budget\"], \"tags\": [\"Finance\", \"made-up\"], \"summarize\": true}", &known);
+        assert_eq!((p.terms.as_slice(), p.tags.as_slice()), (["revenue", "budget"].map(String::from).as_slice(), ["finance".to_string()].as_slice()));
+        assert!(p.summarize && p.confidence >= 0.7 && p.t0 == base.t0, "dates come from the rules");
+        let kept = refine(base.clone(), "I cannot help with that", &known);
+        assert_eq!((kept.terms, kept.confidence), (base.terms, base.confidence));
     }
 }

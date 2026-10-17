@@ -1,6 +1,8 @@
 //! Neural Resource Manager: one worker, strict priority tiers with aging.
 //!
-//! ponytail: non-preemptive (a running job finishes); real preemption needs backend checkpointing.
+//! Preemption is cooperative: `embed` queues one job per `EMBED_CHUNK` texts, so a higher-priority job
+//! waits for at most one chunk. ponytail: a `generate` call is one job and runs to the end; preempting it
+//! needs a streaming backend that can stop and resume mid-generation.
 use crate::NpuBackend;
 use anyhow::{anyhow, Result};
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -10,6 +12,8 @@ use std::sync::{Arc, Condvar, Mutex};
 pub const REALTIME: u8 = 0;
 pub const INTERACTIVE: u8 = 1;
 pub const BACKGROUND: u8 = 2;
+
+const EMBED_CHUNK: usize = 16;
 
 struct Job {
     tier: u8,
@@ -56,8 +60,15 @@ impl Nrm {
     }
 
     pub fn embed(&self, tier: u8, texts: Vec<String>) -> Result<Vec<Vec<f32>>> {
-        let b = self.backend.clone();
-        self.submit(tier, move || b.embed(&texts)).recv().map_err(|_| anyhow!("embed job failed"))?
+        let jobs: Vec<_> = texts.chunks(EMBED_CHUNK).map(|c| {
+            let (b, c) = (self.backend.clone(), c.to_vec());
+            self.submit(tier, move || b.embed(&c))
+        }).collect();
+        let mut out = vec![];
+        for rx in jobs {
+            out.extend(rx.recv().map_err(|_| anyhow!("embed job failed"))??);
+        }
+        Ok(out)
     }
 
     pub fn generate(&self, tier: u8, prompt: String) -> Result<String> {

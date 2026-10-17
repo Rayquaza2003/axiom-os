@@ -82,6 +82,12 @@ fn apps_are_denied_by_default_and_sandboxed() {
     let r = apps::run(&ax, "probe", &args, platform::now(), Duration::from_secs(20)).unwrap();
     assert!(r.log.join("\n").contains("fetch={error:blocked app egress to https://evil.example/x: not approved,"), "{:?}", r.log);
 
+    // model-context capability expires; search does not
+    let r = apps::run(&ax, "probe", &args, platform::now() + 7200.0, Duration::from_secs(20)).unwrap();
+    let log = r.log.join("\n");
+    assert!(log.contains("generate={error:capability expired: generate"), "{log}");
+    assert!(log.contains("search={id:1,ok:[{id:"), "{log}");
+
     // revoke bites on the next run
     apps::revoke(&home, "probe", Some("search")).unwrap();
     let r = apps::run(&ax, "probe", &args, platform::now(), Duration::from_secs(20)).unwrap();

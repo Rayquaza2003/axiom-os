@@ -29,6 +29,8 @@ enum Cmd {
     },
     /// Tag an object (path or id prefix)
     Tag { obj: String, tag: String },
+    /// Remove a tag (the deletion syncs to paired devices)
+    Untag { obj: String, tag: String },
     /// Workspaces are saved queries
     Ws { action: WsAction, name: Option<String>, query: Vec<String> },
     /// Daily briefing
@@ -85,6 +87,11 @@ fn main() -> Result<()> {
             }
         }
         Cmd::Tag { obj, tag } => ax.store.tag(&ax.store.resolve(&obj)?, &tag, 1.0, "user")?,
+        Cmd::Untag { obj, tag } => {
+            if !ax.store.untag(&ax.store.resolve(&obj)?, &tag)? {
+                return Err(anyhow!("{obj} is not tagged {tag:?}"));
+            }
+        }
         Cmd::Ws { action, name, query } => match action {
             WsAction::Save => {
                 let name = name.ok_or_else(|| anyhow!("workspace name required"))?;

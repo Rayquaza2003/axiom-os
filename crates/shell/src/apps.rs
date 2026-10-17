@@ -8,7 +8,9 @@
 //! Calls: `search`, `tag`, `generate`, `fetch` (needs `egress:<host>` AND passes the egress firewall),
 //! plus `log` (no capability). The OS sandbox blocks network, writes and reads of the Axiom home.
 //!
-//! ponytail: capability = coarse name, no per-object scoping or TTL; native/WASM SDKs and a signed app
+//! Model-context capabilities (`generate`) expire after `CAP_TTL_S`; the rest last until revoked.
+//!
+//! ponytail: capability = coarse name, no per-object scoping; native/WASM SDKs and a signed app
 //! store are not built. Add scoping (e.g. `search:tag=finance`) when a real third-party app needs it.
 use crate::Axiom;
 use anyhow::{anyhow, bail, Result};
@@ -18,6 +20,9 @@ use rusqlite::{params, Connection};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
+
+/// (capability, seconds a grant lives). Decision P0.3: short TTL for model-context caps.
+const CAP_TTL_S: &[(&str, f64)] = &[("generate", 3600.0)];
 
 const SCHEMA: &str = "
 create table if not exists grants(app text, cap text, ts real, primary key(app, cap));
@@ -123,8 +128,11 @@ fn call(ax: &Axiom, app: &str, name: &str, args: &Value, now: f64) -> Result<Val
         "fetch" => format!("egress:{}", host_key(args["url"].as_str().unwrap_or(""))),
         _ => return Err(format!("unknown call {name:?}")),
     };
-    if !granted(&ax.home, app).map_err(e)?.contains(&need) {
-        return Err(format!("capability denied: {need}"));
+    let granted_at: Option<f64> = db(&ax.home).map_err(e)?
+        .query_row("select ts from grants where app=? and cap=?", [app, &need], |r| r.get(0)).ok();
+    let Some(granted_at) = granted_at else { return Err(format!("capability denied: {need}")) };
+    if CAP_TTL_S.iter().any(|(c, ttl)| *c == need && now - granted_at > *ttl) {
+        return Err(format!("capability expired: {need} (reinstall to grant again)"));
     }
     let s = |k: &str| args[k].as_str().ok_or_else(|| format!("missing string arg {k:?}"));
     match name {

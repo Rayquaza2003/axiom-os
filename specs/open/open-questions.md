@@ -15,20 +15,21 @@ kernel questions are deferred until the prototype proves out.
 | P0.1 kernel base | Linux now. Later seL4 with Linux-in-VM for drivers. Not Zircon. |
 | P0.2 drivers | Userspace, except interrupt routing and timer. |
 | P0.3 capability TTL | Short default TTL for camera, mic and model-context caps; explicit revoke for the rest. |
-| P2.2 graph store | Objects, edges, metadata and vectors in one transactional embedded DB (SQLite + sqlite-vec). |
-| P3.1 NRM policy | Strict priority tiers plus aging so Background cannot starve. (`axiom/ai.py`) |
+| P2.2 graph store | Objects, edges, metadata and vectors in one transactional embedded DB (SQLite). Vector search is a linear scan (~280ms at 400k passages on M-series); add sqlite-vec or HNSW past ~1M passages. |
+| P3.1 NRM policy | Strict priority tiers plus aging so Background cannot starve. (`crates/core-ai/src/nrm.rs`) |
 | P3.3 planner | <0.7 keyword fallback; >=0.7 execute read-only; any write needs an explicit flag (`--save`). |
-| S.1 egress | Deny by default; per-destination allowlist; model-context always asks and has a byte budget (default 0). (`axiom/egress.py`) |
+| S.1 egress | Deny by default; per-destination allowlist; model-context always asks and has a byte budget (default 0). (`crates/core-ai/src/egress.rs`) |
 | BS.2 hardware | Apple Silicon Mac for the prototype; RK3588 for the first bare-metal target. |
-| BT.1 build | Python package + plain scripts for the prototype; Bazel only when a multi-language kernel build exists. |
+| BT.1 build | Cargo workspace for the prototype; Bazel only when a multi-language kernel build exists. |
 
-Prototype status: Rust workspace (`platform`, `core-data`, `core-ai`, `mesh`, `shell`). Built: P2 (Blake3 + FastCDC objects, graph,
-snapshots), P3 (NRM, planner, egress firewall), P4 subset (pre-shared-key encrypted two-device sync; objects union, edges LWW),
-P5 subset (CLI, TUI, briefing), P6 subset (deny-by-default capability broker, macOS sandbox-exec). Not built: kernel and drivers
-(P0/P1), relay/NAT traversal, Noise NK pairing, state roaming, resource brokerage, native/WASM app SDKs, app store.
-Known gaps: HashEmbedder is lexical (semantic needs an OpenAI-compatible server); snapshots copy the whole DB; planner is rule-based;
-file names do not replicate across devices (a synced object's title is its first line).
-
+Prototype status: Rust workspace (`platform`, `core-data`, `core-ai`, `mesh`, `shell`). Built: P2 (Blake3 + FastCDC objects, graph
+with replicated deletions, copy-on-write snapshots), P3 (NRM with chunk-level preemption, rule planner refined by an LLM when one is
+configured, egress firewall), P4 subset (Noise NNpsk0 pairing with a shared key; objects union, edges LWW, tombstones, file names
+replicate), P5 subset (CLI, TUI, briefing), P6 subset (deny-by-default capability broker with a 1h TTL on `generate`, macOS sandbox-exec).
+Not built: kernel and drivers (P0/P1), relay/NAT traversal, QR pairing, state roaming, resource brokerage, clipboard/audio, network
+failover, native/WASM app SDKs, app store, per-object capability scoping, a Linux app sandbox.
+Known gaps: offline embeddings are lexical (semantic needs an OpenAI-compatible server); an LLM `generate` job cannot be preempted;
+snapshots are only O(1) on copy-on-write filesystems (APFS, btrfs, XFS), elsewhere they are a full copy.
 ---
 
 ## P0 — Kernel
