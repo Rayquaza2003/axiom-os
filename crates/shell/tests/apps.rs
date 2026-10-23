@@ -22,15 +22,17 @@ log "fetch=$(printf '%s' "$reply" | tr -d '"\\')"
 echo pwned > /tmp/axiom-app-probe 2>/dev/null; w=$?
 cat "$2/axiom.db" >/dev/null 2>&1; r=$?
 nc -z -w1 127.0.0.1 "$1" >/dev/null 2>&1; n=$?
-log "probe write=$w read=$r net=$n"
+printf '\000\000\000\017{"op":"status"}' | nc -U "$2/axiomd.sock" >/dev/null 2>&1; u=$?
+log "probe write=$w read=$r net=$n ipc=$u"
 "#;
 
-fn probe(port: &str, home: &Path) -> (bool, bool, bool) {
+fn probe(port: &str, home: &Path) -> (bool, bool, bool, bool) {
     let sh = |c: &str| std::process::Command::new("sh").arg("-c").arg(c).status().unwrap().success();
     (
         sh("echo x > /tmp/axiom-app-probe-control"),
         sh(&format!("cat {}/axiom.db >/dev/null", home.display())),
         sh(&format!("nc -z -w1 127.0.0.1 {port}")),
+        sh(&format!(r#"printf '\000\000\000\017{{"op":"status"}}' | nc -U {}/axiomd.sock >/dev/null"#, home.display())),
     )
 }
 
@@ -53,11 +55,12 @@ fn apps_are_denied_by_default_and_sandboxed() {
     std::fs::write(src.join("manifest.json"),
         r#"{"name":"probe","cmd":["sh","main.sh"],"requires":["search","tag","generate","egress:evil.example"]}"#).unwrap();
 
-    // a listener the app could reach if the sandbox let it
+    // a listener and an axiomd socket the app could reach if the sandbox let it (apps go through the broker)
     let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = l.local_addr().unwrap().port().to_string();
+    axiom_shell::daemon::start(&home, Arc::new(LocalBackend::offline()), None).unwrap();
     let home_s = home.to_string_lossy().to_string();
-    assert_eq!(probe(&port, &home), (true, true, true), "probes must succeed unsandboxed, else the test proves nothing");
+    assert_eq!(probe(&port, &home), (true, true, true, true), "probes must succeed unsandboxed, else the test proves nothing");
     let args = [port.clone(), home_s.clone(), doc.clone()];
 
     // user grants only search + tag
@@ -71,8 +74,8 @@ fn apps_are_denied_by_default_and_sandboxed() {
     assert!(log.contains("tag={id:1,ok:ok}"), "{log}");
     assert!(log.contains("generate={error:capability denied: generate,"), "{log}");
     assert!(log.contains("fetch={error:capability denied: egress:evil.example,"), "{log}");
-    assert!(!log.contains("write=0") && !log.contains("read=0") && !log.contains("net=0"), "sandbox leaked: {log}");
-    assert!(log.contains("probe write=") && log.contains("net="), "{log}");
+    assert!(!log.contains("write=0") && !log.contains("read=0") && !log.contains("net=0") && !log.contains("ipc=0"), "sandbox leaked: {log}");
+    assert!(log.contains("probe write=") && log.contains("ipc="), "{log}");
     assert_eq!(r.calls, [("search", true), ("tag", true), ("generate", false), ("fetch", false)].map(|(c, ok)| (c.to_string(), ok)));
     assert!(ax.store.known_tags().unwrap().contains(&"from-app".to_string()));
     let src_of_tag: String = ax.store.db.query_row("select source from edges where dst='tag:from-app'", [], |r| r.get(0)).unwrap();

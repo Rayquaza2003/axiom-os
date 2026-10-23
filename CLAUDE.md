@@ -6,9 +6,16 @@ Architecture blueprint in `specs/` plus a working personal prototype: Rust works
 
 - Setup: `. ~/.cargo/env`
 - Gate test: `cargo test`
-- CLI: `cargo run --release -- import DIR | ask "summarize Q3 docs" [--cloud URL] [--save] [--speak] | tag | untag | ws save|open|list | clip push|pull|show | brief [--speak] | snapshot | rollback | egress log|allow|budget | tui | mesh key|join HEX|serve ADDR [--jobs]|sync ADDR[,ADDR]|relay ADDR | app install DIR|run NAME [ARGS]|list|revoke NAME [CAP]|sign DIR|trust KEY`
+- CLI: `cargo run --release -- import DIR | ask "summarize Q3 docs" [--cloud URL] [--save] [--speak] | tag | untag | ws save|open|list | clip push|pull|show | brief [--speak] | snapshot | rollback | egress log|allow|budget | tui | mesh key|join HEX|serve ADDR [--jobs]|sync ADDR[,ADDR]|relay ADDR | app install DIR|run NAME [ARGS]|list|revoke NAME [CAP]|sign DIR|trust KEY | daemon status|install|uninstall|key NAME|revoke NAME`
 - Data lives in `$AXIOM_HOME` (default `~/.axiom`).
 - Offline by default (lexical hash embeddings, extractive summaries). For real models point at any OpenAI-compatible server (llama-server with Metal, Ollama): `AXIOM_LLM_MODEL=<model>` for summaries, `AXIOM_EMBED_MODEL=<model>` for semantic vectors, `AXIOM_LLM_URL` / `AXIOM_EMBED_URL` (default `http://localhost:11434`). A store is tied to one embedding dimension.
+
+## axiomd (AI as a system resource)
+
+- `axiomd` (built by `cargo build --release`) owns the model and the one NRM queue for the user. `axiom` processes use it over `$AXIOM_HOME/axiomd.sock` (mode 0600) when it runs, passing each job's tier; otherwise they run inference in-process. While it runs, model settings (`AXIOM_*_MODEL/URL`, `AXIOM_OFFLOAD`) are the daemon's.
+- `axiom daemon install` registers a macOS LaunchAgent (`dev.axiom.axiomd`: starts at login, restarts if it exits). It copies the shell's `AXIOM_*` variables. Log: `$AXIOM_HOME/axiomd.log`.
+- OpenAI-compatible API on `AXIOM_HTTP` (default `127.0.0.1:7779`): `/v1/models`, `/v1/chat/completions`, `/v1/embeddings`. Every request needs a key from `axiom daemon key NAME`. Only the key's hash is stored, in `daemon.db`. A key reaches inference only, never the store. `stream: true` sends the whole answer as one chunk.
+- macOS limits unix socket paths to 104 bytes, so keep `AXIOM_HOME` short.
 
 ## Mesh and apps
 
@@ -29,9 +36,9 @@ Architecture blueprint in `specs/` plus a working personal prototype: Rust works
 
 ## Map
 
-- `platform`: host access (files, clock, HTTP, TTS).
+- `platform`: host access (files, clock, HTTP client and server, unix sockets, launchd, TTS).
 - `core-data` P2: Blake3 + FastCDC objects, graph edges, passage vectors, snapshots (one SQLite file).
 - `core-ai` P3: `NpuBackend`/`LocalBackend`, `Nrm` (priority tiers + aging), planner, summarizer, egress firewall.
 - `mesh` P4: encrypted two-device sync (`sync`, `serve_one`).
-- `shell` P5/P6: `Axiom` facade, CLI (`axiom`), TUI, `apps` sandbox broker + wasm runtime + signing.
+- `shell` P5/P6: `Axiom` facade, CLI (`axiom`), TUI, `apps` sandbox broker + wasm runtime + signing, `daemon` (`axiomd` server and its client backend).
 - `app-sdk` P6: `axiom-app` crate for app authors (native and wasm32).
