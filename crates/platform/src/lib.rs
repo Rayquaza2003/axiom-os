@@ -551,3 +551,156 @@ impl Drop for Proc {
         let _ = self.child.wait();
     }
 }
+
+// --- process accounting -----------------------------------------------------------
+
+/// Cumulative counters of one process.
+pub struct ProcStat {
+    pub name: String,
+    pub cpu_ns: u64,
+    /// CPU energy only: macOS attributes no GPU energy to processes.
+    pub cpu_energy_nj: u64,
+    /// Memory charged to the process; on unified memory this includes its GPU buffers.
+    pub footprint: u64,
+    /// Neural Engine memory.
+    pub neural: u64,
+}
+
+#[cfg(target_os = "macos")]
+mod libproc {
+    use std::ffi::c_void;
+
+    #[repr(C)]
+    pub struct Timebase {
+        pub numer: u32,
+        pub denom: u32,
+    }
+
+    unsafe extern "C" {
+        pub fn proc_listallpids(buf: *mut c_void, bytes: i32) -> i32;
+        pub fn proc_name(pid: i32, buf: *mut c_void, bytes: u32) -> i32;
+        pub fn proc_pid_rusage(pid: i32, flavor: i32, buf: *mut c_void) -> i32;
+        pub fn mach_timebase_info(info: *mut Timebase) -> i32;
+    }
+}
+
+/// Counters of every process this user may inspect (macOS denies other users' processes; they are skipped).
+pub fn proc_stats() -> Result<std::collections::HashMap<i32, ProcStat>> {
+    #[cfg(target_os = "macos")]
+    {
+        use std::ffi::c_void;
+        let mut pids = vec![0i32; 1 << 14];
+        let n = unsafe { libproc::proc_listallpids(pids.as_mut_ptr() as *mut c_void, (pids.len() * 4) as i32) };
+        if n < 0 {
+            return Err(anyhow!("proc_listallpids failed"));
+        }
+        let mut tb = libproc::Timebase { numer: 1, denom: 1 };
+        unsafe { libproc::mach_timebase_info(&mut tb) };
+        let mut out = std::collections::HashMap::new();
+        for &pid in pids.iter().take(n as usize).filter(|&&p| p > 0) {
+            // rusage_info_v6 (sys/resource.h): a 16-byte uuid, then 56 u64 fields; indexes count u64s from the start
+            let mut ri = [0u64; 58];
+            if unsafe { libproc::proc_pid_rusage(pid, 6, ri.as_mut_ptr() as *mut c_void) } != 0 {
+                continue;
+            }
+            let mut name = [0u8; 64];
+            let len = unsafe { libproc::proc_name(pid, name.as_mut_ptr() as *mut c_void, name.len() as u32) }.max(0) as usize;
+            let ticks = (ri[2] + ri[3]) as u128; // ri_user_time + ri_system_time, in mach ticks
+            out.insert(pid, ProcStat {
+                name: String::from_utf8_lossy(&name[..len.min(name.len())]).into_owned(),
+                cpu_ns: (ticks * tb.numer as u128 / tb.denom.max(1) as u128) as u64,
+                cpu_energy_nj: ri[42], // ri_energy_nj
+                footprint: ri[9],      // ri_phys_footprint
+                neural: ri[46],        // ri_neural_footprint
+            });
+        }
+        Ok(out)
+    }
+    #[cfg(not(target_os = "macos"))]
+    Err(anyhow!("process accounting is macOS-only for now"))
+}
+
+/// Cumulative GPU busy time (ns) and name per process, from the IOKit registry. Covers every user's
+/// processes without root. Apple GPUs only (`AppUsage` of each GPU client).
+pub fn gpu_ns() -> Result<std::collections::HashMap<i32, (u64, String)>> {
+    let o = std::process::Command::new("/usr/sbin/ioreg").args(["-l", "-w0", "-r", "-c", "IOAccelerator"]).output()?;
+    Ok(parse_gpu_ns(&String::from_utf8_lossy(&o.stdout)))
+}
+
+fn parse_gpu_ns(ioreg: &str) -> std::collections::HashMap<i32, (u64, String)> {
+    let mut out = std::collections::HashMap::new();
+    for entry in ioreg.split("+-o ").skip(1) {
+        let Some((pid, rest)) = entry.split("\"IOUserClientCreator\" = \"pid ").nth(1).and_then(|c| c.split_once(", ")) else { continue };
+        let Ok(pid) = pid.parse::<i32>() else { continue };
+        let ns: u64 = entry.split("\"accumulatedGPUTime\"=").skip(1)
+            .filter_map(|s| s.split(|c: char| !c.is_ascii_digit()).next()?.parse::<u64>().ok()).sum();
+        out.entry(pid).or_insert((0, rest.split('"').next().unwrap_or("").to_string())).0 += ns;
+    }
+    out
+}
+
+/// Command line of every process, by pid.
+pub fn command_lines() -> Result<std::collections::HashMap<i32, String>> {
+    let o = std::process::Command::new("/bin/ps").args(["-axo", "pid=,command="]).output()?;
+    Ok(String::from_utf8_lossy(&o.stdout).lines()
+        .filter_map(|l| {
+            let (pid, cmd) = l.trim_start().split_once(' ')?;
+            Some((pid.parse().ok()?, cmd.trim().to_string()))
+        })
+        .collect())
+}
+
+/// Files that `pids` have open or memory-mapped, as (pid, path).
+pub fn open_files(pids: &[i32]) -> Result<Vec<(i32, PathBuf)>> {
+    if pids.is_empty() {
+        return Ok(vec![]);
+    }
+    let list: Vec<String> = pids.iter().map(i32::to_string).collect();
+    // lsof exits non-zero when a pid is gone; what it printed still holds
+    let o = std::process::Command::new("/usr/sbin/lsof").args(["-a", "-n", "-P", "-F", "pn", "-p", &list.join(",")]).output()?;
+    let mut pid = 0;
+    let mut out = vec![];
+    for l in String::from_utf8_lossy(&o.stdout).lines() {
+        match l.split_at_checked(1) {
+            Some(("p", v)) => pid = v.parse().unwrap_or(0),
+            Some(("n", v)) if v.starts_with('/') => out.push((pid, PathBuf::from(v))),
+            _ => {}
+        }
+    }
+    Ok(out)
+}
+
+/// Up to `n` leading bytes of a file; `None` if it cannot be read.
+pub fn read_head(path: &Path, n: usize) -> Option<Vec<u8>> {
+    use std::io::Read;
+    let mut b = Vec::with_capacity(n);
+    std::fs::File::open(path).ok()?.take(n as u64).read_to_end(&mut b).ok()?;
+    Some(b)
+}
+
+/// Size of a regular file; `None` for anything else.
+pub fn file_len(path: &Path) -> Option<u64> {
+    std::fs::metadata(path).ok().filter(|m| m.is_file()).map(|m| m.len())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn gpu_time_sums_per_process() {
+        let ioreg = r#"+-o AGXAcceleratorG13G_B0  <class AGXAcceleratorG13G_B0>
+  +-o AGXDeviceUserClient  <class AGXDeviceUserClient>
+  |     "AppUsage" = ({"API"="Metal","lastSubmittedTime"=5,"accumulatedGPUTime"=100},{"API"="Metal","accumulatedGPUTime"=20})
+  |     "IOUserClientCreator" = "pid 439, WindowServer"
+  +-o AGXDeviceUserClient  <class AGXDeviceUserClient>
+  |     "AppUsage" = ({"API"="Metal","accumulatedGPUTime"=3})
+  |     "IOUserClientCreator" = "pid 439, WindowServer"
+  +-o AGXDeviceUserClient  <class AGXDeviceUserClient>
+  |     "AppUsage" = ()
+  |     "IOUserClientCreator" = "pid 77, llama-server"
+"#;
+        let g = super::parse_gpu_ns(ioreg);
+        assert_eq!(g[&439], (123, "WindowServer".to_string()));
+        assert_eq!(g[&77], (0, "llama-server".to_string()));
+        assert_eq!(g.len(), 2, "the accelerator itself has no creator pid");
+    }
+}
