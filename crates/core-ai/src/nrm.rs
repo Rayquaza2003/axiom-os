@@ -3,6 +3,9 @@
 //! Preemption is cooperative: `embed` queues one job per `EMBED_CHUNK` texts, so a higher-priority job
 //! waits for at most one chunk. ponytail: a `generate` call is one job and runs to the end; preempting it
 //! needs a streaming backend that can stop and resume mid-generation.
+//!
+//! With axiomd running, the NRM that matters is the daemon's: a client process's backend forwards each
+//! job's tier there, so all processes on the machine share one queue.
 use crate::NpuBackend;
 use anyhow::{anyhow, Result};
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -62,7 +65,7 @@ impl Nrm {
     pub fn embed(&self, tier: u8, texts: Vec<String>) -> Result<Vec<Vec<f32>>> {
         let jobs: Vec<_> = texts.chunks(EMBED_CHUNK).map(|c| {
             let (b, c) = (self.backend.clone(), c.to_vec());
-            self.submit(tier, move || b.embed(&c))
+            self.submit(tier, move || b.embed_at(tier, &c))
         }).collect();
         let mut out = vec![];
         for rx in jobs {
@@ -73,6 +76,15 @@ impl Nrm {
 
     pub fn generate(&self, tier: u8, prompt: String) -> Result<String> {
         let b = self.backend.clone();
-        self.submit(tier, move || b.generate(&prompt)).recv().map_err(|_| anyhow!("generate job failed"))?
+        self.submit(tier, move || b.generate_at(tier, &prompt)).recv().map_err(|_| anyhow!("generate job failed"))?
+    }
+
+    /// Jobs waiting per tier: [REALTIME, INTERACTIVE, BACKGROUND].
+    pub fn queued(&self) -> [usize; 3] {
+        let mut n = [0; 3];
+        for j in self.q.0.lock().unwrap().iter() {
+            n[(j.tier as usize).min(2)] += 1;
+        }
+        n
     }
 }
