@@ -172,33 +172,35 @@ impl Daemon {
     }
 
     fn serve_http(&self, mut c: Conn) {
-        let (status, ctype, body) = match c.http_request(MAX_BODY) {
-            Ok(req) => self.route(&req),
-            Err(e) => error(400, &e.to_string()),
+        let reply = match c.http_request(MAX_BODY) {
+            Ok(req) => self.route(&req, &mut c),
+            Err(e) => Some(error(400, &e.to_string())),
         };
+        // None: the handler streamed its own response
+        let Some((status, ctype, body)) = reply else { return };
         if status >= 500 {
             eprintln!("axiomd: HTTP {status}: {}", String::from_utf8_lossy(&body));
         }
         let _ = c.http_respond(status, ctype, &body);
     }
 
-    fn route(&self, req: &HttpRequest) -> Reply {
+    fn route(&self, req: &HttpRequest, c: &mut Conn) -> Option<Reply> {
         let key = req.header("authorization").and_then(|a| a.strip_prefix("Bearer ")).map(str::trim);
         let Some(client) = key.and_then(|k| key_owner(&self.home, k)) else {
-            return error(401, "missing or unknown API key (create one with `axiom daemon key NAME`)");
+            return Some(error(401, "missing or unknown API key (create one with `axiom daemon key NAME`)"));
         };
         let body: Value = match req.body.is_empty() {
             true => Value::Null,
             false => match serde_json::from_slice(&req.body) {
                 Ok(v) => v,
-                Err(e) => return error(400, &format!("body is not JSON: {e}")),
+                Err(e) => return Some(error(400, &format!("body is not JSON: {e}"))),
             },
         };
         match (req.method.as_str(), req.path.split('?').next().unwrap_or("")) {
-            ("GET", "/v1/models") => ok(json!({"object": "list", "data": [{"id": MODEL, "object": "model", "owned_by": "axiom"}]})),
-            ("POST", "/v1/embeddings") => self.embeddings(&client, &body),
-            ("POST", "/v1/chat/completions") => self.chat(&client, &body),
-            (m, p) => error(404, &format!("no route {m} {p}")),
+            ("GET", "/v1/models") => Some(ok(json!({"object": "list", "data": [{"id": MODEL, "object": "model", "owned_by": "axiom"}]}))),
+            ("POST", "/v1/embeddings") => Some(self.embeddings(&client, &body)),
+            ("POST", "/v1/chat/completions") => self.chat(&client, &body, c),
+            (m, p) => Some(error(404, &format!("no route {m} {p}"))),
         }
     }
 
@@ -222,30 +224,39 @@ impl Daemon {
         }
     }
 
-    fn chat(&self, client: &str, body: &Value) -> Reply {
+    /// `None` when it streamed the answer itself (`stream: true`).
+    fn chat(&self, client: &str, body: &Value, c: &mut Conn) -> Option<Reply> {
         if !self.nrm.backend.has_llm() {
-            return error(503, "no LLM configured (start axiomd with AXIOM_LLM_MODEL set)");
+            return Some(error(503, "no LLM configured (start axiomd with AXIOM_LLM_MODEL set)"));
         }
         let Some(prompt) = prompt_of(&body["messages"]) else {
-            return error(400, "messages must be a non-empty list of {role, content}");
-        };
-        let text = match self.generate(client, INTERACTIVE, &prompt) {
-            Ok(t) => t,
-            Err(e) => return error(500, &e.to_string()),
+            return Some(error(400, "messages must be a non-empty list of {role, content}"));
         };
         let (id, created) = (format!("chatcmpl-{}", (platform::now() * 1e6) as u64), platform::now() as i64);
-        let msg = json!({"role": "assistant", "content": text});
         if body["stream"] != true {
-            return ok(json!({"id": id, "object": "chat.completion", "created": created, "model": MODEL,
-                             "choices": [{"index": 0, "message": msg, "finish_reason": "stop"}]}));
+            return Some(match self.generate(client, INTERACTIVE, &prompt) {
+                Ok(text) => ok(json!({"id": id, "object": "chat.completion", "created": created, "model": MODEL,
+                                      "choices": [{"index": 0, "message": {"role": "assistant", "content": text}, "finish_reason": "stop"}]})),
+                Err(e) => error(500, &e.to_string()),
+            });
         }
-        // ponytail: the whole answer is one chunk; real token streaming needs a streaming backend
-        let chunk = |delta: Value, finish: Value| format!("data: {}\n\n", json!({
+        // pieces go out as the model makes them; a client that hangs up cancels the generation
+        let event = |delta: Value, finish: Value| format!("data: {}\n\n", json!({
             "id": id, "object": "chat.completion.chunk", "created": created, "model": MODEL,
             "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
         }));
-        let sse = chunk(msg, Value::Null) + &chunk(json!({}), json!("stop")) + "data: [DONE]\n\n";
-        (200, "text/event-stream", sse.into_bytes())
+        c.http_start(200, "text/event-stream").ok()?;
+        c.http_chunk(event(json!({"role": "assistant", "content": ""}), Value::Null).as_bytes()).ok()?;
+        let r = self.timed(client, || {
+            self.nrm.generate_with(INTERACTIVE, prompt, &mut |piece| c.http_chunk(event(json!({"content": piece}), Value::Null).as_bytes()).is_ok())
+        });
+        let end = match r {
+            Ok(_) => event(json!({}), json!("stop")),
+            Err(e) => format!("data: {}\n\n", json!({"error": {"message": e.to_string(), "type": "axiom"}})),
+        };
+        let _ = c.http_chunk(format!("{end}data: [DONE]\n\n").as_bytes());
+        let _ = c.http_chunk(b"");
+        None
     }
 }
 

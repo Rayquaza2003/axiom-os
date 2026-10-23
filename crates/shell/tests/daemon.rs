@@ -103,9 +103,11 @@ fn daemon_shares_one_nrm_and_gates_the_api() {
     assert_eq!((st, json(&body)["choices"][0]["message"]["content"].as_str()), (200, Some("echo: hi")), "{body}");
     let chat = r#"{"messages":[{"role":"system","content":"be brief"},{"role":"user","content":[{"type":"text","text":"hi"}]}],"stream":true}"#;
     let (st, body) = http(&addr, "POST", "/v1/chat/completions", k, chat);
-    assert!(st == 200 && body.ends_with("data: [DONE]\n\n"), "{body}");
-    let first = json(body.lines().next().unwrap().strip_prefix("data: ").unwrap());
-    assert_eq!(first["choices"][0]["delta"]["content"], "echo: system: be brief\n\nuser: hi\n\nassistant:");
+    assert!(st == 200 && body.contains("data: [DONE]"), "{body}");
+    let events: Vec<Value> = body.lines().filter_map(|l| l.strip_prefix("data: ")).filter(|d| d.starts_with('{')).map(json).collect();
+    let text: String = events.iter().filter_map(|e| e["choices"][0]["delta"]["content"].as_str()).collect();
+    assert_eq!(text, "echo: system: be brief\n\nuser: hi\n\nassistant:");
+    assert_eq!(events.last().unwrap()["choices"][0]["finish_reason"], "stop");
 
     assert_eq!(http(&addr, "POST", "/v1/chat/completions", k, r#"{"messages":[]}"#).0, 400);
     assert_eq!(http(&addr, "POST", "/v1/embeddings", k, "not json").0, 400);

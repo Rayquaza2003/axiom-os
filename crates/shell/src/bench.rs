@@ -139,7 +139,7 @@ pub fn render(w: &Workload, phases: &[Phase]) -> String {
     out += &format!("  {:<15} {:>6} {:>9} {:>9} {:>9} {:>18} {:>9} {:>10}\n", "", "probes", "p50", "p95", "max", "background", "GPU busy", "AI memory");
     for p in phases {
         let mut v = p.probes.clone();
-        let bg = if p.loaded { format!("{:.1} {}/s", rate(p), w.unit) } else { "-".into() };
+        let bg = if p.loaded { format!("{:.2} {}/s", rate(p), w.unit) } else { "-".into() };
         out += &format!("  {:<15} {:>6} {:>9} {:>9} {:>9} {:>18} {:>8.0}% {:>10}\n", p.label, v.len(), fmt_secs(percentile(&mut v, 0.5)),
                         fmt_secs(percentile(&mut v, 0.95)), fmt_secs(percentile(&mut v, 1.0)), bg, p.gpu, monitor::size(p.ai_memory));
     }
