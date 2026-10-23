@@ -1,5 +1,5 @@
-use anyhow::{anyhow, Result};
-use axiom_shell::{apps, mode_name, tui, Axiom};
+use anyhow::{anyhow, bail, Result};
+use axiom_shell::{apps, daemon, mode_name, tui, Axiom};
 use chrono::{Local, TimeZone};
 use clap::{Parser, Subcommand};
 use core_ai::egress::Approve;
@@ -53,7 +53,12 @@ enum Cmd {
     },
     /// Sandboxed apps: install DIR | run NAME [ARGS..] | list | revoke NAME [CAP] | sign DIR | trust KEY
     App { action: AppAction, name: Option<String>, rest: Vec<String> },
+    /// System AI service (axiomd): status | install | uninstall | key NAME | revoke NAME
+    Daemon { action: DaemonAction, name: Option<String> },
 }
+
+#[derive(clap::ValueEnum, Clone)]
+enum DaemonAction { Status, Install, Uninstall, Key, Revoke }
 
 #[derive(clap::ValueEnum, Clone)]
 enum WsAction { Save, Open, List }
@@ -83,8 +88,54 @@ fn cli_approve() -> Option<Approve> {
     }))
 }
 
+/// Runs without opening the store or a backend, so it works while no model server is reachable.
+fn daemon_cmd(action: &DaemonAction, name: Option<&str>) -> Result<()> {
+    let home = platform::home()?;
+    let name = || name.ok_or_else(|| anyhow!("client name required"));
+    match action {
+        DaemonAction::Status => {
+            let s = daemon::status(&home)?.ok_or_else(|| anyhow!("axiomd is not running (run `axiomd`, or `axiom daemon install`)"))?;
+            let api = s["http"].as_str().map_or("off".into(), |a| format!("http://{a}/v1"));
+            println!("axiomd up {:.0}s, embedding dim {}, LLM {}, API {api}", s["uptime_s"].as_f64().unwrap_or(0.0), s["dim"],
+                     if s["llm"] == true { "on" } else { "off" });
+            let q = &s["queued"];
+            println!("queued: realtime {}, interactive {}, background {}", q["realtime"], q["interactive"], q["background"]);
+            let reqs: Vec<String> = s["requests"].as_object().into_iter().flatten().map(|(k, v)| format!("{k} {v}")).collect();
+            println!("requests: {}", if reqs.is_empty() { "none".into() } else { reqs.join(", ") });
+        }
+        DaemonAction::Install => {
+            let exe = std::env::current_exe()?.with_file_name("axiomd");
+            if !platform::exists(&exe) {
+                bail!("{} not found (run `cargo build --release`)", exe.display());
+            }
+            // launchd starts in /, so the home is pinned as an absolute path
+            let mut env: Vec<(String, String)> = std::env::vars().filter(|(k, _)| k.starts_with("AXIOM_") && k != "AXIOM_HOME").collect();
+            env.push(("AXIOM_HOME".into(), platform::abspath(&home).to_string_lossy().into()));
+            let plist = platform::service_install(daemon::LABEL, &exe, &env, &home.join("axiomd.log"))?;
+            let keys: Vec<&str> = env.iter().map(|(k, _)| k.as_str()).collect();
+            println!("installed {} (starts at login, restarts if it stops)\nsettings copied: {}", plist.display(),
+                     if keys.is_empty() { "none (defaults)".into() } else { keys.join(", ") });
+        }
+        DaemonAction::Uninstall => println!("{}", if platform::service_uninstall(daemon::LABEL)? { "uninstalled" } else { "not installed" }),
+        DaemonAction::Key => {
+            let key = daemon::issue_key(&home, name()?)?;
+            let api = daemon::status(&home)?.and_then(|s| s["http"].as_str().map(String::from)).unwrap_or_else(daemon::http_addr);
+            println!("{key}\n(shown once) For OpenAI-compatible tools: base URL http://{api}/v1, this as the API key.");
+        }
+        DaemonAction::Revoke => {
+            if !daemon::revoke_key(&home, name()?)? {
+                bail!("{} has no API key", name()?);
+            }
+        }
+    }
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    if let Cmd::Daemon { action, name } = &cli.cmd {
+        return daemon_cmd(action, name.as_deref());
+    }
     let ax = Axiom::open_default(cli.cmd.needs_approval().then(cli_approve).flatten())?;
     let now = platform::now();
     match cli.cmd {
@@ -153,6 +204,7 @@ fn main() -> Result<()> {
             }
         },
         Cmd::Tui => tui::run(&ax)?,
+        Cmd::Daemon { .. } => unreachable!("handled before the store opens"),
         Cmd::Mesh { action, value, jobs } => {
             let need = || value.clone().ok_or_else(|| anyhow!("argument required"));
             let log = |peer: &str, r: Result<mesh::Stats>| -> Result<()> {
