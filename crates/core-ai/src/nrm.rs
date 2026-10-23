@@ -8,6 +8,7 @@
 //! job's tier there, so all processes on the machine share one queue.
 use crate::NpuBackend;
 use anyhow::{anyhow, Result};
+use std::collections::VecDeque;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::mpsc::{channel, Receiver};
 use std::sync::{Arc, Condvar, Mutex};
@@ -26,18 +27,23 @@ struct Job {
 
 type Queue = Arc<(Mutex<Vec<Job>>, Condvar)>;
 
+/// Finished jobs kept for `recent`.
+const LOG: usize = 1024;
+
 pub struct Nrm {
     pub backend: Arc<dyn NpuBackend>,
     q: Queue,
+    done: Arc<Mutex<VecDeque<(u8, f64, f64)>>>,
 }
 
 impl Nrm {
     /// A queued job gains one tier of priority per `aging_s` waited, so BACKGROUND cannot starve.
     pub fn new(backend: Arc<dyn NpuBackend>, aging_s: f64) -> Nrm {
         let q: Queue = Arc::new((Mutex::new(vec![]), Condvar::new()));
-        let worker = q.clone();
+        let done = Arc::new(Mutex::new(VecDeque::with_capacity(LOG)));
+        let (worker, log) = (q.clone(), done.clone());
         std::thread::spawn(move || loop {
-            let job = {
+            let (job, t) = {
                 let mut jobs = worker.0.lock().unwrap();
                 while jobs.is_empty() {
                     jobs = worker.1.wait(jobs).unwrap();
@@ -45,11 +51,22 @@ impl Nrm {
                 let t = platform::now();
                 let key = |j: &Job| j.tier as f64 - (t - j.enqueued) / aging_s;
                 let i = (0..jobs.len()).min_by(|&a, &b| key(&jobs[a]).total_cmp(&key(&jobs[b]))).unwrap();
-                jobs.remove(i)
+                (jobs.remove(i), t)
             };
+            let (tier, waited) = (job.tier, t - job.enqueued);
             let _ = catch_unwind(AssertUnwindSafe(job.run)); // a panicking job must not kill the worker
+            let mut log = log.lock().unwrap();
+            if log.len() == LOG {
+                log.pop_front();
+            }
+            log.push_back((tier, waited, platform::now() - t));
         });
-        Nrm { backend, q }
+        Nrm { backend, q, done }
+    }
+
+    /// The last 1024 finished jobs as (tier, seconds queued, seconds running).
+    pub fn recent(&self) -> Vec<(u8, f64, f64)> {
+        self.done.lock().unwrap().iter().copied().collect()
     }
 
     pub fn submit<T: Send + 'static>(&self, tier: u8, f: impl FnOnce() -> T + Send + 'static) -> Receiver<T> {
