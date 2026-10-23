@@ -6,7 +6,7 @@ Architecture blueprint in `specs/` plus a working personal prototype: Rust works
 
 - Setup: `. ~/.cargo/env`
 - Gate test: `cargo test`
-- CLI: `cargo run --release -- import DIR | ask "summarize Q3 docs" [--cloud URL] [--save] [--speak] | tag | untag | ws save|open|list | clip push|pull|show | brief [--speak] | snapshot | rollback | egress log|allow|budget | tui | mesh key|join HEX|serve ADDR [--jobs]|sync ADDR[,ADDR]|relay ADDR | app install DIR|run NAME [ARGS]|list|revoke NAME [CAP]|sign DIR|trust KEY | daemon status|install|uninstall|key NAME|revoke NAME | monitor [SECS] [--all] [--watch]`
+- CLI: `cargo run --release -- import DIR | ask "summarize Q3 docs" [--cloud URL] [--save] [--speak] | tag | untag | ws save|open|list | clip push|pull|show | brief [--speak] | snapshot | rollback | egress log|allow|budget | tui | mesh key|join HEX|serve ADDR [--jobs]|sync ADDR[,ADDR]|relay ADDR | app install DIR|run NAME [ARGS]|list|revoke NAME [CAP]|sign DIR|trust KEY | daemon status|install|uninstall|key NAME|revoke NAME | monitor [SECS] [--all] [--watch] | bench [embed|generate] [--secs N]`
 - Data lives in `$AXIOM_HOME` (default `~/.axiom`).
 - Offline by default (lexical hash embeddings, extractive summaries). For real models point at any OpenAI-compatible server (llama-server with Metal, Ollama): `AXIOM_LLM_MODEL=<model>` for summaries, `AXIOM_EMBED_MODEL=<model>` for semantic vectors, `AXIOM_LLM_URL` / `AXIOM_EMBED_URL` (default `http://localhost:11434`). A store is tied to one embedding dimension.
 
@@ -23,6 +23,12 @@ Architecture blueprint in `specs/` plus a working personal prototype: Rust works
 - A process counts as AI when it holds Neural Engine memory, or holds model weights. Weights are found three ways: a model file named on its command line (how Ollama's `llama-server` holds its blob), an open or mapped model file (scanned only for processes that use the GPU, the Neural Engine, or ≥20% CPU), or file content. GGUF and safetensors are matched by content; Core ML, ONNX, TFLite and PyTorch by name.
 - Needs no root. GPU time comes from the IOKit registry (`ioreg`); the other counters from `proc_pid_rusage`, which only works for this user's processes.
 - CPU power covers the CPU only, because macOS does not attribute GPU energy to processes. Cloud AI apps do not show.
+
+## Measuring
+
+- `axiom bench` runs each workload three ways: no load, background load sent straight to the model server, and the same load through a private axiomd (`$AXIOM_HOME/bench`). It reports interactive p50/p95/max, background throughput, GPU busy and AI memory. Workloads: `embed` (needs `AXIOM_EMBED_MODEL`) and `generate` (needs `AXIOM_LLM_MODEL`).
+- `axiom daemon status` shows queue wait p50/p95 and run time per tier over the last 1024 jobs (`Nrm::recent`), plus requests and time per client.
+- Results and their reading: README, "Measuring".
 
 ## Mesh and apps
 

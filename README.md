@@ -17,6 +17,7 @@ This repository holds two things:
 - [Command reference](#command-reference)
 - [axiomd: AI as a system service](#axiomd-ai-as-a-system-service)
 - [AI activity monitor](#ai-activity-monitor)
+- [Measuring: axiom bench](#measuring-axiom-bench)
 - [Device mesh](#device-mesh)
 - [Apps](#apps)
 - [Egress firewall](#egress-firewall)
@@ -182,6 +183,7 @@ A store is tied to one embedding dimension. To change the embedding model, use a
 | `axiom app install DIR` / `run NAME [ARGS]` / `list` / `revoke NAME [CAP]` / `sign DIR` / `trust KEY` | Sandboxed apps |
 | `axiom daemon status` / `install` / `uninstall` / `key NAME` / `revoke NAME` | The system AI service |
 | `axiom monitor [SECS] [--all] [--watch]` | AI activity monitor |
+| `axiom bench [embed or generate] [--secs N]` | Measure interactive latency under background AI load, straight to the model server versus through `axiomd` |
 | `axiomd` | Run the system AI service in the foreground |
 
 ## axiomd: AI as a system service
@@ -196,10 +198,16 @@ axiom daemon uninstall
 ```
 
 ```
-axiomd up 7s, embedding dim 256, LLM on, API http://127.0.0.1:7779/v1
-queued: realtime 0, interactive 0, background 0
-requests: editor 3, local 4
+axiomd up 3s, embedding dim 768, LLM on, API http://127.0.0.1:7779/v1
+queued now: realtime 0, interactive 0, background 0
+recent jobs        jobs   wait p50   wait p95   run total
+  realtime             0
+  interactive          5       0 ms       0 ms      2.89 s
+  background           1       0 ms       0 ms       22 ms
+clients: editor 2 requests in 944 ms, local 4 requests in 1.97 s
 ```
+
+The job table covers the last 1024 jobs: how long each waited in the queue and how long it ran, per priority tier. The client line totals the requests and time spent on each tool.
 
 `install` copies your shell's `AXIOM_*` variables into the LaunchAgent, because launchd passes no shell environment. While the daemon runs, its model settings apply to every Axiom process.
 
@@ -260,6 +268,49 @@ A process counts as AI when it holds Neural Engine memory or model weights. Weig
 - Power covers the CPU only, because macOS does not attribute GPU energy to processes.
 - Cloud AI apps do not appear.
 - A report costs about 0.15 s of CPU.
+
+## Measuring: axiom bench
+
+`axiom bench` answers one question: does sharing one AI service make AI faster for you? Each workload runs three ways:
+1. **No load:** interactive requests alone, as a baseline.
+2. **Direct:** background clients and interactive requests all call the model server themselves, the way apps do today.
+3. **Through axiomd:** the same traffic through a private `axiomd`, with the background clients at background priority.
+
+For each, it reports interactive latency (p50, p95, max), background throughput, and the GPU busy share and AI memory from the activity monitor.
+
+```sh
+export AXIOM_EMBED_MODEL=nomic-embed-text AXIOM_LLM_MODEL=qwen2.5:3b-instruct
+axiom bench                  # every workload the configured models allow, 20 s per phase
+axiom bench embed --secs 30
+```
+
+| Workload | Background load | Interactive request |
+|---|---|---|
+| `embed` | One indexer embedding 128 passages per request | Embed one search query every 0.5 s |
+| `generate` | Three apps each writing a paragraph, back to back | A one-word reply every 1 s |
+
+Results on an Apple M1 with Ollama 0.35 (`nomic-embed-text`, `qwen2.5:3b-instruct`):
+
+```
+embed: 1 background client(s), one interactive request every 500 ms
+                  probes       p50       p95       max         background  GPU busy  AI memory
+  no load             10     20 ms     25 ms     25 ms                  -        3%     2.7 GB
+  direct              10    1.62 s    1.73 s    1.73 s       57.6 texts/s       86%     2.7 GB
+  through axiomd      36     40 ms     88 ms    313 ms       51.2 texts/s       83%     2.7 GB
+  through axiomd vs direct: interactive p95 19.6x lower, background throughput -11%
+
+generate: 3 background client(s), one interactive request every 1.00 s
+                  probes       p50       p95       max         background  GPU busy  AI memory
+  no load              5     95 ms    198 ms    198 ms                  -        8%     2.7 GB
+  direct               3    8.38 s    9.48 s    9.48 s      0.3 replies/s       95%     2.8 GB
+  through axiomd       7    2.20 s    2.79 s    2.79 s      0.3 replies/s       93%     2.8 GB
+  through axiomd vs direct: interactive p95 3.4x lower, background throughput +0%
+```
+
+What this shows:
+- **Embeddings.** A search query waits for at most one 16-text chunk instead of a whole 128-text batch, so its p95 drops from 1.73 s to 88 ms. The cost is 11% less background throughput, because smaller batches use the GPU less efficiently. `EMBED_CHUNK` in `crates/core-ai/src/nrm.rs` trades one for the other.
+- **Generation.** A reply jumps the queue but still waits for the generation already running, because a running `generate` cannot be interrupted yet. Its p95 drops from 9.48 s to 2.79 s; with no load it is 198 ms. Token-level preemption (next on the roadmap) should close most of that gap.
+- **Same work.** Throughput and GPU use stay about the same. The gain comes from the order the work runs in, not from doing less of it.
 
 ## Device mesh
 
@@ -403,7 +454,8 @@ These keep the layer portable to another kernel:
 |---|---|
 | `shell/tests/gate.rs` | End to end: import, planner, hybrid search, egress firewall, NRM priority, aging and preemption |
 | `shell/tests/apps.rs` | Sandbox escapes (writes, reads, network, the daemon socket), grants, scoped and expiring capabilities, revocation, wasm apps, signing |
-| `shell/tests/daemon.rs` | Priority across processes, API keys, embeddings, chat, streaming, malformed requests, revocation |
+| `shell/tests/daemon.rs` | Priority across processes, per-tier queue waits, per-client accounting, API keys, embeddings, chat, streaming, malformed requests, revocation |
+| `shell/tests/bench.rs` | Against a one-slot model server, interactive p95 through `axiomd` is at least twice as low as direct, while background work still progresses |
 | `shell/tests/monitor.rs` | A process holding a model shows up with its counters |
 | `mesh/tests/sync.rs` | Merges in any order, tombstones, tampered objects, dimension mismatch, relay failover, offload |
 | unit tests | Planner refinement, GGUF and model detection, IOKit parsing, SDK reply handling |
@@ -415,7 +467,7 @@ These keep the layer portable to another kernel:
 | Plane | What exists |
 |---|---|
 | P2 data | Objects, graph, tombstones, snapshots |
-| P3 AI core | NRM, planner, summarizer, egress firewall, `axiomd`, AI activity monitor |
+| P3 AI core | NRM, planner, summarizer, egress firewall, `axiomd` with scheduling accounting, AI activity monitor, `axiom bench` |
 | P4 mesh | Pairing, sync, relay, failover, session roaming, resource broker |
 | P5 session | CLI, TUI, briefing |
 | P6 runtime | Capability broker, native and wasm apps, Rust SDK, signing |
@@ -440,12 +492,11 @@ These keep the layer portable to another kernel:
 - **The daemon runs on macOS only.** There is no Linux or Windows service for `axiomd` yet.
 
 **Next steps:**
-1. **Measure.** Time each job in `axiomd` (queue wait and run time per tier and per client), and add `axiom bench` to compare answer latency under background load, through the daemon versus direct to the model server.
-2. **Stream and preempt.** Token streaming over the API, and a `generate` that higher-priority work can interrupt.
-3. **Bundle an engine.** Put llama.cpp with Metal inside `axiomd`, so it owns the model instead of fronting Ollama.
-4. **Ship it.** A signed, notarized `.dmg` with `axiomd` registered at login.
-5. **Windows.** Port the `platform` crate and ship an `.exe` installer.
-6. **Reach more AI apps.**
+1. **Stream and preempt.** Token streaming over the API, and a `generate` that higher-priority work can interrupt between tokens. `axiom bench generate` measures the result.
+2. **Bundle an engine.** Put llama.cpp with Metal inside `axiomd`, so it owns the model instead of fronting Ollama.
+3. **Ship it.** A signed, notarized `.dmg` with `axiomd` registered at login.
+4. **Windows.** Port the `platform` crate and ship an `.exe` installer.
+5. **Reach more AI apps.**
    - Serve the Ollama and LM Studio ports, identifying each caller by its process.
    - Add a Network Extension that makes the egress firewall system-wide for cloud AI apps.
    - On Linux, use eBPF, cgroups and GPU scheduler priorities to capture every local AI workload.
