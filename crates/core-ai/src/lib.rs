@@ -25,6 +25,18 @@ pub trait NpuBackend: Send + Sync {
     fn generate_at(&self, _tier: u8, prompt: &str) -> Result<String> {
         self.generate(prompt)
     }
+    /// Streams up to `max_tokens` more of the answer to `prompt`, continuing after `prefix` (the part already
+    /// generated; empty at first). Each piece goes to `piece`, which returns false to stop at once (the
+    /// caller went away). `Ok(true)` when the answer is complete; `Ok(false)` when it stopped or reached
+    /// `max_tokens`, which is how the NRM slices a generation. The default cannot stream: it generates the
+    /// whole answer as one piece.
+    fn generate_stream(&self, tier: u8, prompt: &str, prefix: &str, _max_tokens: usize, piece: &mut dyn FnMut(&str) -> bool) -> Result<bool> {
+        if !prefix.is_empty() {
+            anyhow::bail!("this backend cannot continue a partial answer");
+        }
+        piece(&self.generate_at(tier, prompt)?);
+        Ok(true)
+    }
 }
 
 /// Offline feature-hashing embedder (lexical, not semantic) plus optional OpenAI-compatible HTTP endpoints
@@ -100,6 +112,37 @@ impl NpuBackend for LocalBackend {
         let body = json!({"model": model, "messages": [{"role": "user", "content": prompt}], "stream": false});
         let r: Value = platform::http_json(&format!("{url}/v1/chat/completions"), Some(&body), 300)?;
         Ok(r["choices"][0]["message"]["content"].as_str().unwrap_or("").to_string())
+    }
+
+    /// Server-sent events from `/v1/chat/completions`. A partial answer is resumed by sending it as a
+    /// trailing assistant message, which the server continues (Ollama and llama-server do; their prompt
+    /// cache makes an uninterrupted continuation nearly free).
+    fn generate_stream(&self, _tier: u8, prompt: &str, prefix: &str, max_tokens: usize, piece: &mut dyn FnMut(&str) -> bool) -> Result<bool> {
+        let (url, model) = self.llm.as_ref().ok_or_else(|| anyhow::anyhow!("no LLM configured"))?;
+        let mut messages = vec![json!({"role": "user", "content": prompt})];
+        if !prefix.is_empty() {
+            messages.push(json!({"role": "assistant", "content": prefix}));
+        }
+        let (mut reason, mut stopped) = (None, false);
+        let body = json!({"model": model, "messages": messages, "stream": true, "max_tokens": max_tokens});
+        platform::http_lines(&format!("{url}/v1/chat/completions"), &body, 300, &mut |line| {
+            let Some(data) = line.strip_prefix("data: ") else { return true };
+            let Ok(v) = serde_json::from_str::<Value>(data) else { return data != "[DONE]" };
+            if let Some(r) = v["choices"][0]["finish_reason"].as_str() {
+                reason = Some(r.to_string());
+            }
+            match v["choices"][0]["delta"]["content"].as_str() {
+                Some(s) if !s.is_empty() && !piece(s) => {
+                    stopped = true;
+                    false
+                }
+                _ => true,
+            }
+        })?;
+        if reason.is_none() && !stopped {
+            anyhow::bail!("{url}: the answer stream ended early");
+        }
+        Ok(reason.is_some_and(|r| r != "length"))
     }
 }
 
