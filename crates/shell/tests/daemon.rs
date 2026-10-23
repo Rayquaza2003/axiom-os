@@ -81,6 +81,9 @@ fn daemon_shares_one_nrm_and_gates_the_api() {
     release.send(()).unwrap();
     jobs.into_iter().for_each(|t| drop(t.join().unwrap()));
     assert_eq!(*echo.calls.lock().unwrap(), ["hold", "ia", "bg"]);
+    let s = daemon::status(&home).unwrap().unwrap();
+    let wait = |t: &str| s["recent"][t]["wait_p95"].as_f64().unwrap();
+    assert!(wait("background") > wait("interactive"), "the earlier background job waited longer: {s}");
 
     // HTTP API: no key, no service
     assert_eq!(http(&addr, "GET", "/v1/models", None, "").0, 401);
@@ -111,8 +114,8 @@ fn daemon_shares_one_nrm_and_gates_the_api() {
     assert_eq!(raw(&addr, "POST /v1/embeddings HTTP/1.1\r\nContent-Length: 999999999999\r\n\r\n").0, 400);
 
     let s = daemon::status(&home).unwrap().unwrap();
-    assert_eq!(s["requests"]["editor"], 3, "{s}");
-    assert!(s["requests"]["local"].as_u64().unwrap() >= 5, "{s}");
+    assert_eq!(s["clients"]["editor"]["requests"], 3, "{s}");
+    assert!(s["clients"]["local"]["requests"].as_u64().unwrap() >= 5 && s["clients"]["local"]["seconds"].as_f64().unwrap() > 0.0, "{s}");
 
     // revoking a key bites on the next request
     assert!(daemon::revoke_key(&home, "editor").unwrap());

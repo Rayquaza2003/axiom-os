@@ -12,7 +12,7 @@
 //! API keys: only a hash is stored (`daemon.db`); a key reaches inference, never the user's data.
 use crate::{apps, AGING_S};
 use anyhow::{anyhow, bail, Result};
-use core_ai::{NpuBackend, Nrm, BACKGROUND, INTERACTIVE};
+use core_ai::{NpuBackend, Nrm, BACKGROUND, INTERACTIVE, REALTIME};
 use platform::{Conn, HttpRequest, LocalConn};
 use rusqlite::{params, Connection};
 use serde_json::{json, Value};
@@ -34,6 +34,20 @@ pub fn http_addr() -> String {
     std::env::var("AXIOM_HTTP").unwrap_or_else(|_| HTTP_DEFAULT.into())
 }
 
+/// Nearest-rank percentile (`p` in 0..=1); 0 for no samples.
+pub fn percentile(v: &mut [f64], p: f64) -> f64 {
+    if v.is_empty() {
+        return 0.0;
+    }
+    v.sort_by(f64::total_cmp);
+    v[((p * v.len() as f64).ceil() as usize).clamp(1, v.len()) - 1]
+}
+
+/// "420 ms" below a second, "2.31 s" from there.
+pub fn fmt_secs(s: f64) -> String {
+    if s < 1.0 { format!("{:.0} ms", s * 1e3) } else { format!("{s:.2} s") }
+}
+
 // --- server ------------------------------------------------------------------------------------
 
 struct Daemon {
@@ -41,8 +55,8 @@ struct Daemon {
     nrm: Nrm,
     started: f64,
     http: Option<String>,
-    /// Requests served per client ("local" = Axiom processes; others = API key names).
-    requests: Mutex<BTreeMap<String, u64>>,
+    /// Per client ("local" = Axiom processes; others = API key names): requests, and seconds spent on them.
+    clients: Mutex<BTreeMap<String, (u64, f64)>>,
 }
 
 /// Serves `home` on its unix socket, and on `http` the OpenAI-compatible API. Listeners run on their own
@@ -56,7 +70,7 @@ pub fn start(home: &Path, backend: Arc<dyn NpuBackend>, http: Option<&str>) -> R
         nrm: Nrm::new(backend, AGING_S),
         started: platform::now(),
         http: http.as_ref().map(|l| l.local_addr()).transpose()?,
-        requests: Mutex::default(),
+        clients: Mutex::default(),
     });
     let addr = d.http.clone();
     accept_loop(d.clone(), move || local.accept(), Daemon::serve_local);
@@ -116,28 +130,44 @@ impl Daemon {
     }
 
     fn embed(&self, client: &str, tier: u8, texts: Vec<String>) -> Result<Vec<Vec<f32>>> {
-        self.count(client);
-        self.nrm.embed(tier, texts)
+        self.timed(client, || self.nrm.embed(tier, texts))
     }
 
     fn generate(&self, client: &str, tier: u8, prompt: &str) -> Result<String> {
-        self.count(client);
-        self.nrm.generate(tier, prompt.to_string())
+        self.timed(client, || self.nrm.generate(tier, prompt.to_string()))
     }
 
-    fn count(&self, client: &str) {
-        *self.requests.lock().unwrap().entry(client.to_string()).or_default() += 1;
+    fn timed<T>(&self, client: &str, f: impl FnOnce() -> T) -> T {
+        let t = platform::now();
+        let r = f();
+        let mut clients = self.clients.lock().unwrap();
+        let c = clients.entry(client.to_string()).or_default();
+        *c = (c.0 + 1, c.1 + platform::now() - t);
+        r
     }
 
     fn status(&self) -> Value {
         let [rt, ia, bg] = self.nrm.queued();
+        let recent = self.nrm.recent();
+        let tier = |t: u8| {
+            let mut waits: Vec<f64> = recent.iter().filter(|j| j.0 == t).map(|j| j.1).collect();
+            json!({
+                "jobs": waits.len(),
+                "wait_p50": percentile(&mut waits, 0.5),
+                "wait_p95": percentile(&mut waits, 0.95),
+                "run_s": recent.iter().filter(|j| j.0 == t).map(|j| j.2).sum::<f64>(),
+            })
+        };
+        let clients: serde_json::Map<String, Value> = self.clients.lock().unwrap().iter()
+            .map(|(k, (n, s))| (k.clone(), json!({"requests": n, "seconds": s}))).collect();
         json!({
             "uptime_s": platform::now() - self.started,
             "dim": self.nrm.backend.dim(),
             "llm": self.nrm.backend.has_llm(),
             "http": self.http,
             "queued": {"realtime": rt, "interactive": ia, "background": bg},
-            "requests": self.requests.lock().unwrap().clone(),
+            "recent": {"realtime": tier(REALTIME), "interactive": tier(INTERACTIVE), "background": tier(BACKGROUND)},
+            "clients": clients,
         })
     }
 

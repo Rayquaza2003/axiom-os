@@ -192,7 +192,7 @@ fn gguf_name(h: &[u8]) -> Option<String> {
     None
 }
 
-fn size(b: u64) -> String {
+pub fn size(b: u64) -> String {
     match b {
         b if b >= 1 << 30 => format!("{:.1} GB", b as f64 / (1u64 << 30) as f64),
         b if b >= 1 << 20 => format!("{} MB", b >> 20),

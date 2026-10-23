@@ -12,6 +12,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 pub mod apps;
+pub mod bench;
 pub mod daemon;
 pub mod monitor;
 pub mod tui;

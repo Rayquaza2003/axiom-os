@@ -1,5 +1,5 @@
 use anyhow::{anyhow, bail, Result};
-use axiom_shell::{apps, daemon, mode_name, monitor, tui, Axiom};
+use axiom_shell::{apps, bench, daemon, mode_name, monitor, tui, Axiom};
 use chrono::{Local, TimeZone};
 use clap::{Parser, Subcommand};
 use core_ai::egress::Approve;
@@ -66,7 +66,19 @@ enum Cmd {
         /// Refresh until interrupted
         #[arg(long)] watch: bool,
     },
+    /// Measure: latency of small interactive AI requests under background AI load, sent straight to the
+    /// model server versus through axiomd (needs AXIOM_EMBED_MODEL and/or AXIOM_LLM_MODEL)
+    Bench {
+        /// Workload to run (default: every one the configured models allow)
+        workload: Option<BenchKind>,
+        /// Seconds per loaded phase
+        #[arg(long, default_value_t = 20.0)]
+        secs: f64,
+    },
 }
+
+#[derive(clap::ValueEnum, Clone, PartialEq)]
+enum BenchKind { Embed, Generate }
 
 #[derive(clap::ValueEnum, Clone)]
 enum DaemonAction { Status, Install, Uninstall, Key, Revoke }
@@ -110,9 +122,20 @@ fn daemon_cmd(action: &DaemonAction, name: Option<&str>) -> Result<()> {
             println!("axiomd up {:.0}s, embedding dim {}, LLM {}, API {api}", s["uptime_s"].as_f64().unwrap_or(0.0), s["dim"],
                      if s["llm"] == true { "on" } else { "off" });
             let q = &s["queued"];
-            println!("queued: realtime {}, interactive {}, background {}", q["realtime"], q["interactive"], q["background"]);
-            let reqs: Vec<String> = s["requests"].as_object().into_iter().flatten().map(|(k, v)| format!("{k} {v}")).collect();
-            println!("requests: {}", if reqs.is_empty() { "none".into() } else { reqs.join(", ") });
+            println!("queued now: realtime {}, interactive {}, background {}", q["realtime"], q["interactive"], q["background"]);
+            println!("recent jobs        jobs   wait p50   wait p95   run total");
+            for t in ["realtime", "interactive", "background"] {
+                let f = |k: &str| daemon::fmt_secs(s["recent"][t][k].as_f64().unwrap_or(0.0));
+                match s["recent"][t]["jobs"].as_u64().unwrap_or(0) {
+                    0 => println!("  {t:<13} {:>8}", 0),
+                    n => println!("  {t:<13} {n:>8} {:>10} {:>10} {:>11}", f("wait_p50"), f("wait_p95"), f("run_s")),
+                }
+            }
+            let clients: Vec<String> = s["clients"].as_object().into_iter().flatten().map(|(k, v)| {
+                let n = v["requests"].as_u64().unwrap_or(0);
+                format!("{k} {n} request{} in {}", if n == 1 { "" } else { "s" }, daemon::fmt_secs(v["seconds"].as_f64().unwrap_or(0.0)))
+            }).collect();
+            println!("clients: {}", if clients.is_empty() { "none".into() } else { clients.join(", ") });
         }
         DaemonAction::Install => {
             let exe = std::env::current_exe()?.with_file_name("axiomd");
@@ -146,6 +169,26 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     if let Cmd::Daemon { action, name } = &cli.cmd {
         return daemon_cmd(action, name.as_deref());
+    }
+    if let Cmd::Bench { workload, secs } = &cli.cmd {
+        let home = platform::home()?;
+        let backend = axiom_shell::default_backend(&home)?;
+        let want = |k: BenchKind| workload.as_ref().is_none_or(|w| *w == k);
+        let mut ws: Vec<&bench::Workload> = vec![];
+        if want(BenchKind::Embed) && std::env::var("AXIOM_EMBED_MODEL").is_ok_and(|v| !v.is_empty()) {
+            ws.push(&bench::EMBED);
+        }
+        if want(BenchKind::Generate) && backend.has_llm() {
+            ws.push(&bench::GENERATE);
+        }
+        if ws.is_empty() {
+            bail!("nothing to measure: the embed workload needs AXIOM_EMBED_MODEL, the generate workload AXIOM_LLM_MODEL \
+                   (offline inference has no contention to measure)");
+        }
+        for (w, phases) in ws.iter().zip(bench::run(&home, backend, &ws, *secs, &|m| eprintln!("{m}"))?) {
+            println!("{}", bench::render(w, &phases));
+        }
+        return Ok(());
     }
     if let Cmd::Monitor { secs, all, watch } = cli.cmd {
         let mut a = monitor::sample()?;
@@ -230,7 +273,7 @@ fn main() -> Result<()> {
             }
         },
         Cmd::Tui => tui::run(&ax)?,
-        Cmd::Daemon { .. } | Cmd::Monitor { .. } => unreachable!("handled before the store opens"),
+        Cmd::Daemon { .. } | Cmd::Monitor { .. } | Cmd::Bench { .. } => unreachable!("handled before the store opens"),
         Cmd::Mesh { action, value, jobs } => {
             let need = || value.clone().ok_or_else(|| anyhow!("argument required"));
             let log = |peer: &str, r: Result<mesh::Stats>| -> Result<()> {
