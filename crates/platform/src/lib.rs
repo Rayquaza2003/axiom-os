@@ -88,6 +88,19 @@ pub fn http_json(url: &str, payload: Option<&Value>, timeout_s: u64) -> Result<V
     resp.map_err(|e| anyhow!("{url}: {e}"))?.into_json().map_err(|e| anyhow!("{url}: {e}"))
 }
 
+/// POSTs `payload` and hands each line of the response to `line` as it arrives, until `line` returns false
+/// or the response ends. Stopping early closes the connection, which tells the server to stop as well.
+pub fn http_lines(url: &str, payload: &Value, timeout_s: u64, line: &mut dyn FnMut(&str) -> bool) -> Result<()> {
+    use std::io::BufRead;
+    let resp = ureq::post(url).timeout(Duration::from_secs(timeout_s)).send_json(payload).map_err(|e| anyhow!("{url}: {e}"))?;
+    for l in std::io::BufReader::new(resp.into_reader()).lines() {
+        if !line(&l.map_err(|e| anyhow!("{url}: {e}"))?) {
+            break;
+        }
+    }
+    Ok(())
+}
+
 /// Text-to-speech through the host. Best effort: silent if no synthesizer exists.
 pub fn speak(text: &str) {
     for cmd in ["say", "espeak"] {
@@ -307,16 +320,35 @@ impl Conn {
     /// Writes a whole response; the connection closes after it (no keep-alive).
     pub fn http_respond(&mut self, status: u16, content_type: &str, body: &[u8]) -> Result<()> {
         use std::io::Write;
-        let reason = match status {
-            200 => "OK",
-            400 => "Bad Request",
-            401 => "Unauthorized",
-            404 => "Not Found",
-            503 => "Service Unavailable",
-            _ => "Error",
-        };
-        write!(self.0, "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len())?;
+        write!(self.0, "HTTP/1.1 {status} {}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", reason(status), body.len())?;
         Ok(self.0.write_all(body)?)
+    }
+
+    /// Starts a response whose body follows in `http_chunk` calls (chunked transfer encoding).
+    pub fn http_start(&mut self, status: u16, content_type: &str) -> Result<()> {
+        use std::io::Write;
+        write!(self.0, "HTTP/1.1 {status} {}\r\nContent-Type: {content_type}\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n", reason(status))?;
+        Ok(self.0.flush()?)
+    }
+
+    /// Sends one piece of a started response at once; an empty piece ends it. Fails once the client is gone.
+    pub fn http_chunk(&mut self, data: &[u8]) -> Result<()> {
+        use std::io::Write;
+        write!(self.0, "{:x}\r\n", data.len())?;
+        self.0.write_all(data)?;
+        self.0.write_all(b"\r\n")?;
+        Ok(self.0.flush()?)
+    }
+}
+
+fn reason(status: u16) -> &'static str {
+    match status {
+        200 => "OK",
+        400 => "Bad Request",
+        401 => "Unauthorized",
+        404 => "Not Found",
+        503 => "Service Unavailable",
+        _ => "Error",
     }
 }
 
