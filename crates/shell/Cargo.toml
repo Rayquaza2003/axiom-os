@@ -2,6 +2,7 @@
 name = "axiom-shell"
 version = "0.1.0"
 edition = "2024"
+default-run = "axiom"
 
 [dependencies]
 anyhow = "1.0.104"
@@ -30,3 +31,7 @@ path = "src/lib.rs"
 [[bin]]
 name = "axiom"
 path = "src/main.rs"
+
+[[bin]]
+name = "axiomd"
+path = "src/bin/axiomd.rs"

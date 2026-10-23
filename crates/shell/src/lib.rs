@@ -12,9 +12,25 @@ use std::path::Path;
 use std::sync::Arc;
 
 pub mod apps;
+pub mod daemon;
 pub mod tui;
 
 pub const AGING_S: f64 = 30.0;
+
+/// This device's inference: `AXIOM_OFFLOAD=host:port` (or `relay://...`, comma list fails over) runs it on a
+/// paired device, otherwise `LocalBackend` (env-configured).
+pub fn default_backend(home: &Path) -> Result<Arc<dyn NpuBackend>> {
+    let Some(addr) = std::env::var("AXIOM_OFFLOAD").ok().filter(|v| !v.is_empty()) else {
+        return Ok(Arc::new(LocalBackend::from_env()?));
+    };
+    let (key, log, dest) = (mesh::load_or_create_key(home)?, home.join("egress.db"), addr.clone());
+    let audit = Box::new(move |n| {
+        if let Ok(e) = Egress::new(&log, None, None) {
+            let _ = e.record(&dest, "mesh-offload", n, "allow", "");
+        }
+    });
+    Ok(Arc::new(mesh::RemoteBackend::connect(&addr, key, audit)?))
+}
 
 pub struct Axiom {
     pub home: std::path::PathBuf,
@@ -42,20 +58,13 @@ impl Axiom {
         Ok(ax)
     }
 
-    /// `AXIOM_OFFLOAD=host:port` (or `relay://...`, comma list fails over) runs all inference on a paired device.
+    /// Inference goes to axiomd when it runs (one scheduler and one loaded model for the machine),
+    /// otherwise to `default_backend` in this process.
     pub fn open_default(approve: Option<Approve>) -> Result<Axiom> {
         let home = platform::home()?;
-        let backend: Arc<dyn NpuBackend> = match std::env::var("AXIOM_OFFLOAD").ok().filter(|v| !v.is_empty()) {
-            Some(addr) => {
-                let (key, log, dest) = (mesh::load_or_create_key(&home)?, home.join("egress.db"), addr.clone());
-                let audit = Box::new(move |n| {
-                    if let Ok(e) = Egress::new(&log, None, None) {
-                        let _ = e.record(&dest, "mesh-offload", n, "allow", "");
-                    }
-                });
-                Arc::new(mesh::RemoteBackend::connect(&addr, key, audit)?)
-            }
-            None => Arc::new(LocalBackend::from_env()?),
+        let backend: Arc<dyn NpuBackend> = match daemon::connect(&home)? {
+            Some(d) => Arc::new(d),
+            None => default_backend(&home)?,
         };
         Axiom::open(&home, backend, approve, None)
     }
