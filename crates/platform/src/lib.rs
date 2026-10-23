@@ -171,7 +171,7 @@ pub fn exists(path: &Path) -> bool {
 
 const NET_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Length-prefixed message stream over TCP.
+/// TCP stream: length-prefixed messages (mesh), or one HTTP request and response (the axiomd API).
 pub struct Conn(std::net::TcpStream);
 
 pub struct Listener(std::net::TcpListener);
@@ -224,25 +224,31 @@ impl Listener {
     }
 }
 
+fn write_msg(w: &mut impl std::io::Write, msg: &[u8]) -> Result<()> {
+    w.write_all(&(msg.len() as u32).to_be_bytes())?;
+    Ok(w.write_all(msg)?)
+}
+
+fn read_msg(r: &mut impl std::io::Read, max: usize) -> Result<Vec<u8>> {
+    let mut len = [0u8; 4];
+    r.read_exact(&mut len)?;
+    let n = u32::from_be_bytes(len) as usize;
+    if n > max {
+        return Err(anyhow!("message of {n} bytes exceeds limit {max}"));
+    }
+    let mut b = vec![0u8; n];
+    r.read_exact(&mut b)?;
+    Ok(b)
+}
+
 impl Conn {
     pub fn send(&mut self, msg: &[u8]) -> Result<()> {
-        use std::io::Write;
-        self.0.write_all(&(msg.len() as u32).to_be_bytes())?;
-        Ok(self.0.write_all(msg)?)
+        write_msg(&mut self.0, msg)
     }
 
     /// Reads one message; rejects anything larger than `max` bytes before allocating.
     pub fn recv(&mut self, max: usize) -> Result<Vec<u8>> {
-        use std::io::Read;
-        let mut len = [0u8; 4];
-        self.0.read_exact(&mut len)?;
-        let n = u32::from_be_bytes(len) as usize;
-        if n > max {
-            return Err(anyhow!("message of {n} bytes exceeds limit {max}"));
-        }
-        let mut b = vec![0u8; n];
-        self.0.read_exact(&mut b)?;
-        Ok(b)
+        read_msg(&mut self.0, max)
     }
 
     /// Like `recv`, but `None` if nothing arrives within `wait`.
@@ -258,6 +264,173 @@ impl Conn {
             Ok(_) => self.recv(max).map(Some),
         }
     }
+
+    /// Reads one HTTP/1.x request: head capped at 16 KiB, body at `max_body`. No chunked bodies.
+    pub fn http_request(&mut self, max_body: usize) -> Result<HttpRequest> {
+        use std::io::{BufRead, Read, Write};
+        const MAX_HEAD: u64 = 16 << 10;
+        let mut r = std::io::BufReader::new(&self.0);
+        let mut head = String::new();
+        while !head.ends_with("\n\r\n") && !head.ends_with("\n\n") {
+            if (&mut r).take(MAX_HEAD - head.len() as u64).read_line(&mut head)? == 0 {
+                return Err(anyhow!("HTTP head incomplete or over 16 KiB"));
+            }
+        }
+        let mut lines = head.lines();
+        let mut first = lines.next().unwrap_or("").split(' ');
+        let (method, path) = match (first.next(), first.next(), first.next()) {
+            (Some(m), Some(p), Some(v)) if v.starts_with("HTTP/1.") => (m.to_string(), p.to_string()),
+            _ => return Err(anyhow!("not an HTTP/1.x request")),
+        };
+        let headers = lines.filter(|l| !l.is_empty())
+            .map(|l| l.split_once(':').map(|(k, v)| (k.trim().to_ascii_lowercase(), v.trim().to_string())))
+            .collect::<Option<Vec<_>>>().ok_or_else(|| anyhow!("malformed HTTP header"))?;
+        let mut req = HttpRequest { method, path, headers, body: vec![] };
+        if req.header("transfer-encoding").is_some() {
+            return Err(anyhow!("chunked request bodies are not supported (send Content-Length)"));
+        }
+        let len: usize = req.header("content-length").unwrap_or("0").parse().map_err(|_| anyhow!("bad Content-Length"))?;
+        if len > max_body {
+            return Err(anyhow!("body of {len} bytes exceeds limit {max_body}"));
+        }
+        if req.header("expect").is_some_and(|v| v.eq_ignore_ascii_case("100-continue")) {
+            (&self.0).write_all(b"HTTP/1.1 100 Continue\r\n\r\n")?;
+        }
+        // grows as bytes arrive: a client announcing a large body must also send it
+        r.take(len as u64).read_to_end(&mut req.body)?;
+        if req.body.len() < len {
+            return Err(anyhow!("body shorter than Content-Length"));
+        }
+        Ok(req)
+    }
+
+    /// Writes a whole response; the connection closes after it (no keep-alive).
+    pub fn http_respond(&mut self, status: u16, content_type: &str, body: &[u8]) -> Result<()> {
+        use std::io::Write;
+        let reason = match status {
+            200 => "OK",
+            400 => "Bad Request",
+            401 => "Unauthorized",
+            404 => "Not Found",
+            503 => "Service Unavailable",
+            _ => "Error",
+        };
+        write!(self.0, "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len())?;
+        Ok(self.0.write_all(body)?)
+    }
+}
+
+pub struct HttpRequest {
+    pub method: String,
+    pub path: String,
+    /// Names lowercased.
+    pub headers: Vec<(String, String)>,
+    pub body: Vec<u8>,
+}
+
+impl HttpRequest {
+    pub fn header(&self, name: &str) -> Option<&str> {
+        self.headers.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str())
+    }
+}
+
+// --- local IPC ------------------------------------------------------------------
+
+/// Unix socket with the `Conn` message framing. The socket file is mode 0600, so only its owner can connect.
+pub struct LocalConn(std::os::unix::net::UnixStream);
+
+pub struct LocalListener(std::os::unix::net::UnixListener);
+
+/// Binds `path`, replacing a stale socket file; fails while a live listener owns it.
+pub fn listen_local(path: &Path) -> Result<LocalListener> {
+    use std::os::unix::fs::PermissionsExt;
+    if dial_local(path).is_ok() {
+        return Err(anyhow!("{} is in use (already running?)", path.display()));
+    }
+    let _ = std::fs::remove_file(path);
+    let l = std::os::unix::net::UnixListener::bind(path).map_err(|e| anyhow!("{}: {e}", path.display()))?;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    Ok(LocalListener(l))
+}
+
+pub fn dial_local(path: &Path) -> Result<LocalConn> {
+    Ok(LocalConn(std::os::unix::net::UnixStream::connect(path).map_err(|e| anyhow!("{}: {e}", path.display()))?))
+}
+
+impl LocalListener {
+    pub fn accept(&self) -> Result<LocalConn> {
+        Ok(LocalConn(self.0.accept()?.0))
+    }
+}
+
+impl LocalConn {
+    pub fn send(&mut self, msg: &[u8]) -> Result<()> {
+        write_msg(&mut self.0, msg)
+    }
+
+    pub fn recv(&mut self, max: usize) -> Result<Vec<u8>> {
+        read_msg(&mut self.0, max)
+    }
+}
+
+// --- login services -------------------------------------------------------------
+
+fn launch_agent(label: &str) -> Result<PathBuf> {
+    let home = std::env::var_os("HOME").ok_or_else(|| anyhow!("HOME not set"))?;
+    Ok(PathBuf::from(home).join("Library/LaunchAgents").join(format!("{label}.plist")))
+}
+
+fn launchctl(args: &[&str]) -> Result<()> {
+    let o = std::process::Command::new("/bin/launchctl").args(args).output()?;
+    if o.status.success() {
+        return Ok(());
+    }
+    Err(anyhow!("launchctl {}: {}", args.join(" "), String::from_utf8_lossy(&o.stderr).trim()))
+}
+
+/// launchd domain of the user owning `plist` (std has no getuid; we wrote the file, so it is ours).
+fn gui_domain(plist: &Path) -> Result<String> {
+    use std::os::unix::fs::MetadataExt;
+    Ok(format!("gui/{}", std::fs::metadata(plist)?.uid()))
+}
+
+/// Runs `program` at login and restarts it if it exits (a macOS LaunchAgent), starting it now.
+/// launchd passes no shell environment, so `env` is all the service sees beyond its defaults.
+pub fn service_install(label: &str, program: &Path, env: &[(String, String)], log: &Path) -> Result<PathBuf> {
+    if !cfg!(target_os = "macos") {
+        return Err(anyhow!("login services are macOS-only for now (launchd)"));
+    }
+    let esc = |v: &str| v.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+    let s = |v: &str| format!("<string>{}</string>", esc(v));
+    let env: String = env.iter().map(|(k, v)| format!("<key>{}</key>{}", esc(k), s(v))).collect();
+    let (prog, log) = (s(&program.to_string_lossy()), s(&log.to_string_lossy()));
+    let plist = format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+         <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
+         <plist version=\"1.0\"><dict>\n\
+         <key>Label</key>{}\n<key>ProgramArguments</key><array>{prog}</array>\n\
+         <key>EnvironmentVariables</key><dict>{env}</dict>\n\
+         <key>RunAtLoad</key><true/>\n<key>KeepAlive</key><true/>\n\
+         <key>StandardOutPath</key>{log}\n<key>StandardErrorPath</key>{log}\n\
+         </dict></plist>\n", s(label));
+    let path = launch_agent(label)?;
+    makedirs(path.parent().unwrap())?;
+    std::fs::write(&path, plist)?;
+    let domain = gui_domain(&path)?;
+    let _ = launchctl(&["bootout", &format!("{domain}/{label}")]); // a previous install, if any
+    launchctl(&["bootstrap", &domain, &path.to_string_lossy()])?;
+    Ok(path)
+}
+
+/// Stops the service and removes it from login. `false` if it was not installed.
+pub fn service_uninstall(label: &str) -> Result<bool> {
+    let path = launch_agent(label)?;
+    if !path.exists() {
+        return Ok(false);
+    }
+    let _ = launchctl(&["bootout", &format!("{}/{label}", gui_domain(&path)?)]);
+    std::fs::remove_file(&path)?;
+    Ok(true)
 }
 
 // --- clipboard ------------------------------------------------------------------
