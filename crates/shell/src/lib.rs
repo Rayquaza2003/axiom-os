@@ -13,6 +13,7 @@ use std::sync::Arc;
 
 pub mod apps;
 pub mod daemon;
+pub mod monitor;
 pub mod tui;
 
 pub const AGING_S: f64 = 30.0;

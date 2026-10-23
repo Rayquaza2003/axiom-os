@@ -1,5 +1,5 @@
 use anyhow::{anyhow, bail, Result};
-use axiom_shell::{apps, daemon, mode_name, tui, Axiom};
+use axiom_shell::{apps, daemon, mode_name, monitor, tui, Axiom};
 use chrono::{Local, TimeZone};
 use clap::{Parser, Subcommand};
 use core_ai::egress::Approve;
@@ -55,6 +55,17 @@ enum Cmd {
     App { action: AppAction, name: Option<String>, rest: Vec<String> },
     /// System AI service (axiomd): status | install | uninstall | key NAME | revoke NAME
     Daemon { action: DaemonAction, name: Option<String> },
+    /// AI activity: which processes run local AI and their GPU, CPU, memory and Neural Engine use
+    /// (cloud AI apps run elsewhere and do not show)
+    Monitor {
+        /// Measurement window in seconds
+        #[arg(default_value_t = 2.0)]
+        secs: f64,
+        /// Also list every other process that used the GPU
+        #[arg(long)] all: bool,
+        /// Refresh until interrupted
+        #[arg(long)] watch: bool,
+    },
 }
 
 #[derive(clap::ValueEnum, Clone)]
@@ -136,6 +147,21 @@ fn main() -> Result<()> {
     if let Cmd::Daemon { action, name } = &cli.cmd {
         return daemon_cmd(action, name.as_deref());
     }
+    if let Cmd::Monitor { secs, all, watch } = cli.cmd {
+        let mut a = monitor::sample()?;
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs_f64(secs.max(0.1)));
+            let b = monitor::sample()?;
+            let text = monitor::render(&monitor::report(&a, &b, all)?);
+            if !watch {
+                println!("{text}");
+                return Ok(());
+            }
+            print!("\x1b[2J\x1b[H{text}\n");
+            std::io::stdout().flush()?;
+            a = b;
+        }
+    }
     let ax = Axiom::open_default(cli.cmd.needs_approval().then(cli_approve).flatten())?;
     let now = platform::now();
     match cli.cmd {
@@ -204,7 +230,7 @@ fn main() -> Result<()> {
             }
         },
         Cmd::Tui => tui::run(&ax)?,
-        Cmd::Daemon { .. } => unreachable!("handled before the store opens"),
+        Cmd::Daemon { .. } | Cmd::Monitor { .. } => unreachable!("handled before the store opens"),
         Cmd::Mesh { action, value, jobs } => {
             let need = || value.clone().ok_or_else(|| anyhow!("argument required"));
             let log = |peer: &str, r: Result<mesh::Stats>| -> Result<()> {

@@ -25,7 +25,8 @@ kernel questions are deferred until the prototype proves out.
 Prototype status: Rust workspace (`platform`, `core-data`, `core-ai`, `mesh`, `shell`, `app-sdk`). Built: P2 (Blake3 + FastCDC objects,
 graph with replicated deletions, copy-on-write snapshots), P3 (NRM with chunk-level preemption, rule planner refined by an LLM when one is
 configured, egress firewall, `axiomd`: one model and one NRM queue per machine, with a unix socket for Axiom processes, an
-OpenAI-compatible HTTP API behind per-client keys, and a macOS LaunchAgent), P4 (Noise NNpsk0 pairing with a shared key shown as hex + QR; objects union, edges LWW, tombstones;
+OpenAI-compatible HTTP API behind per-client keys, and a macOS LaunchAgent; an AI activity monitor with per-process GPU, CPU,
+memory and Neural Engine use, which finds model holders by command line, mapped files and file content), P4 (Noise NNpsk0 pairing with a shared key shown as hex + QR; objects union, edges LWW, tombstones;
 relay for NAT, address-list failover; session roaming of workspaces, active workspace and clipboard; resource broker for
 embed/generate/speak offload), P5 subset (CLI, TUI, briefing), P6 (capability broker with tag-scoped and expiring grants; native apps
 under sandbox-exec or bwrap; wasm apps on wasmi; Rust SDK; ed25519-signed bundles with trusted publishers and same-publisher updates).
