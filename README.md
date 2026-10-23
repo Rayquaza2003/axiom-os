@@ -122,7 +122,9 @@ When `axiomd` is not running, each Axiom process runs its own NRM in-process wit
 
 **Scheduling.** The NRM has three tiers: realtime, interactive and background.
 - **Aging:** a waiting job gains one tier every 30 seconds, so background work never starves.
-- **Preemption:** embeddings run in 16-text chunks, so a higher-priority job waits for at most one chunk.
+- **Preemption:**
+  - Embeddings run in 16-text chunks, so a higher-priority job waits for at most one chunk.
+  - Generations stream in 8-token slices. Between slices, a waiting higher-tier job goes first, and the generation then resumes exactly where it stopped. On Ollama, slicing an uninterrupted answer costs nothing measurable: a 308-token answer took 0.88× as long in 16-token slices and came out identical.
 - **One queue:** with `axiomd` running, every process's jobs share the daemon's queue.
 
 **Session roaming.** Workspaces, the active workspace and the clipboard are stored as graph edges, so they travel with every mesh sync. `axiom ws open` with no name reopens whatever workspace was last active, possibly on another device.
@@ -231,7 +233,7 @@ print(reply.choices[0].message.content)
 | Endpoint | Notes |
 |---|---|
 | `GET /v1/models` | Lists one model, `axiom` |
-| `POST /v1/chat/completions` | `stream: true` is supported but sends the whole answer as one chunk |
+| `POST /v1/chat/completions` | `stream: true` streams tokens as they are generated; a client that disconnects cancels its generation |
 | `POST /v1/embeddings` | `input` is a string or a list of strings |
 
 Requests without a valid key get `401`. A key reaches inference only, never your data. The daemon adds about 45 µs per request (100 µs in the slowest 5%) and uses about 6 MB of memory without a model.
@@ -289,28 +291,27 @@ axiom bench embed --secs 30
 | `embed` | One indexer embedding 128 passages per request | Embed one search query every 0.5 s |
 | `generate` | Three apps each writing a paragraph, back to back | A one-word reply every 1 s |
 
-Results on an Apple M1 with Ollama 0.35 (`nomic-embed-text`, `qwen2.5:3b-instruct`):
+Results on an Apple M1 (8 GB) with Ollama 0.35 (`nomic-embed-text`, `qwen2.5:3b-instruct`). Embed used 20 s phases; generate used 60 s phases (`--secs 60`):
 
-```
-embed: 1 background client(s), one interactive request every 500 ms
-                  probes       p50       p95       max         background  GPU busy  AI memory
-  no load             10     20 ms     25 ms     25 ms                  -        3%     2.7 GB
-  direct              10    1.62 s    1.73 s    1.73 s       57.6 texts/s       86%     2.7 GB
-  through axiomd      36     40 ms     88 ms    313 ms       51.2 texts/s       83%     2.7 GB
-  through axiomd vs direct: interactive p95 19.6x lower, background throughput -11%
-
-generate: 3 background client(s), one interactive request every 1.00 s
-                  probes       p50       p95       max         background  GPU busy  AI memory
-  no load              5     95 ms    198 ms    198 ms                  -        8%     2.7 GB
-  direct               3    8.38 s    9.48 s    9.48 s      0.3 replies/s       95%     2.8 GB
-  through axiomd       7    2.20 s    2.79 s    2.79 s      0.3 replies/s       93%     2.8 GB
-  through axiomd vs direct: interactive p95 3.4x lower, background throughput +0%
-```
+| Workload | Phase | Interactive p50 | Interactive p95 | Background throughput |
+|---|---|---|---|---|
+| embed | no load | 20 ms | 25 ms | - |
+| embed | direct | 1.62 s | 1.73 s | 57.6 texts/s |
+| embed | through axiomd | 40 ms | **88 ms** | 51.2 texts/s (−11%) |
+| generate | no load | 113 ms | 253 ms | - |
+| generate | direct | 9.19 s | 10.21 s | 0.3 replies/s |
+| generate | through axiomd | 592 ms | **748 ms** | 0.1 replies/s (−53%) |
 
 What this shows:
-- **Embeddings.** A search query waits for at most one 16-text chunk instead of a whole 128-text batch, so its p95 drops from 1.73 s to 88 ms. The cost is 11% less background throughput, because smaller batches use the GPU less efficiently. `EMBED_CHUNK` in `crates/core-ai/src/nrm.rs` trades one for the other.
-- **Generation.** A reply jumps the queue but still waits for the generation already running, because a running `generate` cannot be interrupted yet. Its p95 drops from 9.48 s to 2.79 s; with no load it is 198 ms. Token-level preemption (next on the roadmap) should close most of that gap.
-- **Same work.** Throughput and GPU use stay about the same. The gain comes from the order the work runs in, not from doing less of it.
+- **Embeddings.** A search query waits for at most one 16-text chunk instead of a whole 128-text batch. Its p95 drops from 1.73 s to 88 ms. The cost is 11% less background throughput, because smaller batches use the GPU less efficiently. `EMBED_CHUNK` in `crates/core-ai/src/nrm.rs` trades one for the other.
+- **Generation.** A reply waits for at most one 8-token slice of the background answers, so its p95 drops from 10.2 s to 0.75 s. Two things cost background throughput:
+  - The 39 interactive replies now actually run (direct mode got through only 6).
+  - After each interruption, Ollama re-reads the background context, because with one slot its cache holds only the last request.
+
+  This test sends one interactive request per second, far more than real use. An engine that keeps paused generations in memory removes the re-read.
+- **Preemption policy.** Pausing by cancelling the stream gave a slightly lower p95 (618 ms) but cost 75% of background throughput, because Ollama takes 0.4–1.3 s to cancel. Slices end cleanly instead.
+
+**Check the no-load row first.** The numbers depend heavily on free memory. On the same Mac with 10 GB of swap in use, every phase got several times slower, the no-load baseline included. Small embedding chunks suffered most, because each one paged the model back in. If the no-load row is slower than usual, the machine is short of memory and the comparison is not meaningful.
 
 ## Device mesh
 
@@ -458,7 +459,7 @@ These keep the layer portable to another kernel:
 | `shell/tests/bench.rs` | Against a one-slot model server, interactive p95 through `axiomd` is at least twice as low as direct, while background work still progresses |
 | `shell/tests/monitor.rs` | A process holding a model shows up with its counters |
 | `mesh/tests/sync.rs` | Merges in any order, tombstones, tampered objects, dimension mismatch, relay failover, offload |
-| unit tests | Planner refinement, GGUF and model detection, IOKit parsing, SDK reply handling |
+| unit tests | NRM preemption, resume and cancel; planner refinement; GGUF and model detection; IOKit parsing; SDK reply handling |
 
 ## Status and roadmap
 
@@ -467,7 +468,7 @@ These keep the layer portable to another kernel:
 | Plane | What exists |
 |---|---|
 | P2 data | Objects, graph, tombstones, snapshots |
-| P3 AI core | NRM, planner, summarizer, egress firewall, `axiomd` with scheduling accounting, AI activity monitor, `axiom bench` |
+| P3 AI core | NRM with sliced, preemptible generation; planner; summarizer; egress firewall; `axiomd` with token streaming and scheduling accounting; AI activity monitor; `axiom bench` |
 | P4 mesh | Pairing, sync, relay, failover, session roaming, resource broker |
 | P5 session | CLI, TUI, briefing |
 | P6 runtime | Capability broker, native and wasm apps, Rust SDK, signing |
@@ -485,18 +486,18 @@ These keep the layer portable to another kernel:
 
 **Known gaps:**
 - **Offline embeddings are lexical.** Semantic search needs a model server.
-- **Some jobs can't be interrupted.** A running `generate` job cannot be preempted.
-- **The daemon's API is simplified.** It flattens chat roles into one prompt and streams the whole answer as one chunk.
+- **Resuming costs a re-read on Ollama.** After an interruption, a paused generation's context is read again, so heavy interactive use slows background generation.
+- **The daemon's API is simplified.** It flattens chat roles into one prompt.
+- **Backends without streaming can't be paused.** A generation on a backend that cannot stream (a paired device, for example) runs to the end.
 - **Snapshots are only O(1) on copy-on-write filesystems.**
 - **The Linux sandbox is untested.**
 - **The daemon runs on macOS only.** There is no Linux or Windows service for `axiomd` yet.
 
 **Next steps:**
-1. **Stream and preempt.** Token streaming over the API, and a `generate` that higher-priority work can interrupt between tokens. `axiom bench generate` measures the result.
-2. **Bundle an engine.** Put llama.cpp with Metal inside `axiomd`, so it owns the model instead of fronting Ollama.
-3. **Ship it.** A signed, notarized `.dmg` with `axiomd` registered at login.
-4. **Windows.** Port the `platform` crate and ship an `.exe` installer.
-5. **Reach more AI apps.**
+1. **Bundle an engine.** Put llama.cpp with Metal inside `axiomd`, so it owns the model instead of fronting Ollama. Paused generations then keep their context in memory, so resuming is free, and interactive and background requests can share one batch.
+2. **Ship it.** A signed, notarized `.dmg` with `axiomd` registered at login.
+3. **Windows.** Port the `platform` crate and ship an `.exe` installer.
+4. **Reach more AI apps.**
    - Serve the Ollama and LM Studio ports, identifying each caller by its process.
    - Add a Network Extension that makes the egress firewall system-wide for cloud AI apps.
    - On Linux, use eBPF, cgroups and GPU scheduler priorities to capture every local AI workload.

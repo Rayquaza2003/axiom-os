@@ -14,7 +14,8 @@ Architecture blueprint in `specs/` plus a working personal prototype: Rust works
 
 - `axiomd` (built by `cargo build --release`) owns the model and the one NRM queue for the user. `axiom` processes use it over `$AXIOM_HOME/axiomd.sock` (mode 0600) when it runs, passing each job's tier; otherwise they run inference in-process. While it runs, model settings (`AXIOM_*_MODEL/URL`, `AXIOM_OFFLOAD`) are the daemon's.
 - `axiom daemon install` registers a macOS LaunchAgent (`dev.axiom.axiomd`: starts at login, restarts if it exits). It copies the shell's `AXIOM_*` variables. Log: `$AXIOM_HOME/axiomd.log`.
-- OpenAI-compatible API on `AXIOM_HTTP` (default `127.0.0.1:7779`): `/v1/models`, `/v1/chat/completions`, `/v1/embeddings`. Every request needs a key from `axiom daemon key NAME`. Only the key's hash is stored, in `daemon.db`. A key reaches inference only, never the store. `stream: true` sends the whole answer as one chunk.
+- OpenAI-compatible API on `AXIOM_HTTP` (default `127.0.0.1:7779`): `/v1/models`, `/v1/chat/completions`, `/v1/embeddings`. Every request needs a key from `axiom daemon key NAME`. Only the key's hash is stored, in `daemon.db`. A key reaches inference only, never the store. `stream: true` streams tokens (chunked SSE); a client that hangs up cancels its generation.
+- The NRM generates in 8-token slices (`SLICE_TOKENS`, `generate_stream` with `max_tokens`). Between slices, a waiting higher-tier job runs first, then the generation resumes by sending its partial answer as a trailing assistant message. Aging orders the queue but never shields a running job from a higher tier.
 - macOS limits unix socket paths to 104 bytes, so keep `AXIOM_HOME` short.
 
 ## AI activity monitor
