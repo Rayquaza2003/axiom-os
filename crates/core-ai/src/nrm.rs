@@ -50,6 +50,14 @@ pub struct Nrm {
 /// them) and give the same text.
 const SLICE_TOKENS: usize = 8;
 
+fn push_log(log: &Mutex<VecDeque<(u8, f64, f64)>>, job: (u8, f64, f64)) {
+    let mut log = log.lock().unwrap();
+    if log.len() == LOG {
+        log.pop_front();
+    }
+    log.push_back(job);
+}
+
 /// Lower runs first: the tier, minus one per `aging_s` waited.
 fn rank(tier: u8, since: f64, now: f64, aging_s: f64) -> f64 {
     tier as f64 - (now - since) / aging_s
@@ -80,13 +88,13 @@ impl Nrm {
             };
             let (tier, waited) = (job.tier, t - job.enqueued);
             let _ = catch_unwind(AssertUnwindSafe(job.run)); // a panicking job must not kill the worker
-            let mut log = log.lock().unwrap();
-            if log.len() == LOG {
-                log.pop_front();
-            }
-            log.push_back((tier, waited, platform::now() - t));
+            push_log(&log, (tier, waited, platform::now() - t));
         });
         Nrm { backend, q, done }
+    }
+
+    fn log(&self, tier: u8, waited: f64, ran: f64) {
+        push_log(&self.done, (tier, waited, ran));
     }
 
     /// The last 1024 finished jobs as (tier, seconds queued, seconds running). A preempted generation
@@ -129,6 +137,20 @@ impl Nrm {
     /// to cancel (the caller went away). Preemption is invisible here: the pieces just pause.
     pub fn generate_with(&self, tier: u8, prompt: String, on_piece: &mut dyn FnMut(&str) -> bool) -> Result<String> {
         let (since, mut out) = (platform::now(), String::new());
+        if self.backend.batches() {
+            // it runs this alongside other generations and orders them by tier itself
+            let mut cancelled = false;
+            let done = self.backend.generate_stream(tier, &prompt, "", usize::MAX, &mut |piece| {
+                out += piece;
+                cancelled = !on_piece(piece);
+                !cancelled
+            });
+            self.log(tier, 0.0, platform::now() - since);
+            if cancelled {
+                bail!("generation cancelled");
+            }
+            return if done? { Ok(out) } else { Err(anyhow!("the answer stopped early")) };
+        }
         loop {
             let (tx, rx) = channel::<String>();
             let (b, p, mut prefix, q) = (self.backend.clone(), prompt.clone(), out.clone(), self.q.clone());

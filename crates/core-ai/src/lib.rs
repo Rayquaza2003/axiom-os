@@ -25,6 +25,11 @@ pub trait NpuBackend: Send + Sync {
     fn generate_at(&self, _tier: u8, prompt: &str) -> Result<String> {
         self.generate(prompt)
     }
+    /// True for a backend that runs many generations side by side and orders them itself (the built-in
+    /// engine). The NRM then hands generations straight to it instead of slicing them through its queue.
+    fn batches(&self) -> bool {
+        false
+    }
     /// Streams up to `max_tokens` more of the answer to `prompt`, continuing after `prefix` (the part already
     /// generated; empty at first). Each piece goes to `piece`, which returns false to stop at once (the
     /// caller went away). `Ok(true)` when the answer is complete; `Ok(false)` when it stopped or reached
