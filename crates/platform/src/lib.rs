@@ -745,3 +745,51 @@ mod tests {
         assert_eq!(g.len(), 2, "the accelerator itself has no creator pid");
     }
 }
+
+// --- memory ------------------------------------------------------------------------
+
+pub struct Memory {
+    pub total: u64,
+    /// What a new allocation can get without pushing other programs to swap: the kernel's own free share
+    /// (it counts cached files and compressible memory), never less than the free and reclaimable pages.
+    pub available: u64,
+    /// The kernel's memory pressure: 1 normal, 2 warning, 4 critical.
+    pub pressure: u8,
+}
+
+/// This machine's memory now (macOS: sysctl and vm_stat).
+pub fn memory() -> Result<Memory> {
+    let sysctl = |k: &str| -> Result<u64> {
+        let o = std::process::Command::new("/usr/sbin/sysctl").args(["-n", k]).output()?;
+        String::from_utf8_lossy(&o.stdout).trim().parse().map_err(|_| anyhow!("sysctl {k}: no number"))
+    };
+    let o = std::process::Command::new("/usr/bin/vm_stat").output()?;
+    let total = sysctl("hw.memsize")?;
+    let level = total / 100 * sysctl("kern.memorystatus_level").unwrap_or(0).min(100);
+    Ok(Memory { total, available: level.max(parse_vm_stat(&String::from_utf8_lossy(&o.stdout))),
+                pressure: sysctl("kern.memorystatus_vm_pressure_level").unwrap_or(1) as u8 })
+}
+
+/// The kernel's memory pressure alone (one sysctl): 1 normal, 2 warning, 4 critical.
+pub fn memory_pressure() -> u8 {
+    std::process::Command::new("/usr/sbin/sysctl").args(["-n", "kern.memorystatus_vm_pressure_level"]).output().ok()
+        .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse().ok()).unwrap_or(1)
+}
+
+fn parse_vm_stat(out: &str) -> u64 {
+    let page: u64 = out.split("page size of ").nth(1).and_then(|r| r.split(' ').next()?.parse().ok()).unwrap_or(4096);
+    let pages = |name: &str| -> u64 {
+        out.lines().find_map(|l| l.strip_prefix(name)?.trim().trim_end_matches('.').parse().ok()).unwrap_or(0)
+    };
+    page * ["Pages free:", "Pages inactive:", "Pages speculative:", "Pages purgeable:"].iter().map(|n| pages(n)).sum::<u64>()
+}
+
+#[cfg(test)]
+mod memory_tests {
+    #[test]
+    fn vm_stat_counts_reclaimable_pages() {
+        let out = "Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free:      10.\nPages active:   999.\n\
+                   Pages inactive:  20.\nPages speculative: 3.\nPages wired down: 7.\nPages purgeable: 1.\n";
+        assert_eq!(super::parse_vm_stat(out), 34 * 16384);
+    }
+}
