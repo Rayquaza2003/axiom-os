@@ -19,7 +19,7 @@ fn paused_generations_resume_without_rereading_their_prompt() {
         eprintln!("skipped: set AXIOM_ENGINE_MODEL to run");
         return;
     };
-    let e = Engine::load(Some(resolve(&spec).unwrap()), None, std::time::Duration::from_secs(2)).unwrap();
+    let e = Engine::load(Some(resolve(&spec).unwrap()), None, engine::Idle { context: std::time::Duration::from_secs(2), model: std::time::Duration::from_secs(2) }).unwrap();
     let long = format!("{}\nIn one sentence, what is this text about?", "The lighthouse keeper logged every passing ship. ".repeat(60));
     let (a, prefill, _) = slice(&e, &long, "", 8);
     assert!(!a.is_empty());
@@ -49,7 +49,7 @@ fn generations_run_side_by_side_in_one_batch() {
         eprintln!("skipped: set AXIOM_ENGINE_MODEL to run");
         return;
     };
-    let e = std::sync::Arc::new(Engine::load(Some(resolve(&spec).unwrap()), None, std::time::Duration::from_secs(60)).unwrap());
+    let e = std::sync::Arc::new(Engine::load(Some(resolve(&spec).unwrap()), None, engine::Idle { context: std::time::Duration::from_secs(60), model: std::time::Duration::from_secs(60) }).unwrap());
     e.generate("Say hi.").unwrap(); // load the model
     let t = std::time::Instant::now();
     let alone = { e.generate("Reply with one word: ready").unwrap(); t.elapsed().as_secs_f64() };
@@ -78,7 +78,7 @@ fn long_prompts_use_the_whole_context() {
         eprintln!("skipped: set AXIOM_ENGINE_MODEL to run");
         return;
     };
-    let e = Engine::load(Some(resolve(&spec).unwrap()), None, std::time::Duration::from_secs(60)).unwrap();
+    let e = Engine::load(Some(resolve(&spec).unwrap()), None, engine::Idle { context: std::time::Duration::from_secs(60), model: std::time::Duration::from_secs(60) }).unwrap();
     // about 3000 tokens: past the old 2048 share per answer
     let notes = "Note: the harbour office opens at nine and the ferry leaves at noon. ".repeat(190);
     let answer = e.generate(&format!("{notes}\nWhen does the ferry leave? Answer in a few words.")).unwrap();
@@ -94,7 +94,7 @@ fn batched_embeddings_match_one_at_a_time() {
         eprintln!("skipped: set AXIOM_ENGINE_EMBED to run");
         return;
     };
-    let e = Engine::load(None, Some(resolve(&spec).unwrap()), std::time::Duration::from_secs(60)).unwrap();
+    let e = Engine::load(None, Some(resolve(&spec).unwrap()), engine::Idle { context: std::time::Duration::from_secs(60), model: std::time::Duration::from_secs(60) }).unwrap();
     let texts: Vec<String> = (0..32).map(|i| format!("Passage {i}: revenue, hiring and the roadmap for item {i}.")).collect();
     e.embed(&texts).unwrap(); // load the model and size its buffers for a full batch
     let t = std::time::Instant::now();
