@@ -1,4 +1,4 @@
-//! In-process inference on llama.cpp (Metal on Apple Silicon): axiomd owns the model instead of fronting a
+//! In-process inference on llama.cpp (Metal on Apple Silicon): axion owns the model instead of fronting a
 //! model server. One thread owns llama.cpp; callers talk to it over channels, so the engine is safe to call
 //! from any thread.
 //!
@@ -32,10 +32,13 @@ use std::sync::{Mutex, OnceLock};
 
 /// Generations running or paused at once.
 const SEQS: usize = 4;
-/// KV cells shared by all sequences (about 300 MB for a 3B model at f16).
+/// KV cells shared by all sequences unless `AXIOM_ENGINE_CTX` says otherwise (about 300 MB for a 3B model
+/// at f16). Any one answer may use all of them, up to the model's trained length.
 const CTX_TOKENS: u32 = 8192;
 /// Tokens per prefill batch, and the longest text an embedding sees.
 const BATCH: usize = 2048;
+/// Texts embedded together in one batch.
+const EMBED_SEQS: usize = 16;
 
 static BACKEND: OnceLock<LlamaBackend> = OnceLock::new();
 
@@ -114,6 +117,17 @@ impl Engine {
 
     fn send(&self, r: Req) -> Result<()> {
         self.tx.lock().unwrap().send(r).map_err(|_| anyhow!("engine thread is gone"))
+    }
+}
+
+/// Frees the models now rather than at the idle timeout (the exit hook's copy of the sender would keep
+/// the thread alive otherwise).
+impl Drop for Engine {
+    fn drop(&mut self) {
+        let (ack, done) = channel();
+        if self.send(Req::Stop(ack)).is_ok() {
+            let _ = done.recv_timeout(std::time::Duration::from_secs(5));
+        }
     }
 }
 
@@ -251,6 +265,10 @@ struct Wait {
 struct Chat<'m> {
     m: &'m LlamaModel,
     ctx: LlamaContext<'m>,
+    /// KV cells in the context.
+    cells: i32,
+    /// Longest prompt plus answer: the context or the model's trained length, whichever is smaller.
+    limit: i32,
     seqs: Vec<Option<Seq>>,
     streams: Vec<Stream>,
     waiting: Vec<Wait>,
@@ -287,13 +305,39 @@ impl Chat<'_> {
         }
     }
 
+    fn free(&mut self, id: usize) {
+        let _ = self.ctx.kv_cache_seq_rm(id as i32, None, None);
+        self.seqs[id] = None;
+    }
+
+    /// Makes room for `n` more KV cells by dropping paused sequences, least recently used first.
+    /// False when the running ones alone leave no room.
+    fn room(&mut self, n: i32) -> bool {
+        loop {
+            let used: i32 = self.seqs.iter().flatten().map(|s| s.pos).sum();
+            if used + n <= self.cells {
+                return true;
+            }
+            let running = |i: usize| self.streams.iter().any(|st| st.seq == i);
+            let Some(id) = (0..SEQS).filter(|&i| !running(i) && self.seqs[i].is_some()).min_by_key(|&i| self.seqs[i].as_ref().unwrap().used) else {
+                return false;
+            };
+            self.free(id);
+        }
+    }
+
     /// Reads prompt and prefix into sequence `id` and samples its first token.
     fn prefill(&mut self, id: usize, prompt: &str, prefix: &str, tick: u64) -> Result<LlamaToken> {
-        self.ctx.kv_cache_seq_rm(id as i32, None, None)?;
-        self.seqs[id] = None;
+        self.free(id);
         let tmpl = self.m.chat_template(None).map_err(|e| anyhow!("model has no chat template: {e}"))?;
         let text = self.m.apply_chat_template(&tmpl, &[LlamaChatMessage::new("user".into(), prompt.into())?], true)? + prefix;
         let tokens = self.m.vocab().tokenize(text.as_bytes(), true, true);
+        if tokens.len() as i32 >= self.limit {
+            bail!("the prompt is {} tokens; this model and context hold {}", tokens.len(), self.limit);
+        }
+        if !self.room(tokens.len() as i32) {
+            bail!("the context is full with running answers; try again shortly");
+        }
         let mut pos = 0;
         for (n, chunk) in tokens.chunks(BATCH).enumerate() {
             let mut batch = LlamaBatch::new(chunk.len(), 1);
@@ -313,6 +357,16 @@ impl Chat<'_> {
 
     /// One token for every running stream, in a single batch.
     fn step(&mut self) -> Result<()> {
+        // with no paused answer left to drop, the longest running one ends to make room
+        while !self.room(self.streams.len() as i32) {
+            let k = (0..self.streams.len()).max_by_key(|&k| self.seqs[self.streams[k].seq].as_ref().unwrap().pos).unwrap();
+            let st = self.streams.remove(k);
+            self.free(st.seq);
+            let _ = st.out.send(Err(anyhow!("the context is full; the answer was cut off")));
+        }
+        if self.streams.is_empty() {
+            return Ok(());
+        }
         let mut batch = LlamaBatch::new(self.streams.len(), 1);
         for st in &self.streams {
             let s = self.seqs[st.seq].as_mut().unwrap();
@@ -333,9 +387,8 @@ impl Chat<'_> {
     /// answer frees its sequence; a used-up request or a gone caller leaves it paused.
     fn deliver(&mut self, mut st: Stream, t: LlamaToken) -> Result<Option<Stream>> {
         let s = self.seqs[st.seq].as_mut().unwrap();
-        if self.m.vocab().is_eog(t) || s.pos as u32 >= CTX_TOKENS / SEQS as u32 {
-            self.ctx.kv_cache_seq_rm(st.seq as i32, None, None)?;
-            self.seqs[st.seq] = None;
+        if self.m.vocab().is_eog(t) || s.pos >= self.limit {
+            self.free(st.seq);
             let _ = st.out.send(Ok(None));
             return Ok(None);
         }
@@ -360,8 +413,7 @@ impl Chat<'_> {
     /// After a failed step: tell every running caller and drop their sequences.
     fn fail(&mut self, e: &anyhow::Error) {
         for st in std::mem::take(&mut self.streams) {
-            let _ = self.ctx.kv_cache_seq_rm(st.seq as i32, None, None);
-            self.seqs[st.seq] = None;
+            self.free(st.seq);
             let _ = st.out.send(Err(anyhow!("{e}")));
         }
     }
@@ -413,11 +465,12 @@ fn run(backend: &LlamaBackend, chat: &Option<PathBuf>, embed: &Option<PathBuf>, 
                             let _ = embed_model.set(load(backend, path)?);
                         }
                         let p = LlamaContextParams::default().with_embeddings(true).with_n_ctx(NonZeroU32::new(BATCH as u32))
-                            .with_n_batch(BATCH as u32).with_n_ubatch(BATCH as u32);
+                            .with_n_batch(BATCH as u32).with_n_ubatch(BATCH as u32).with_n_seq_max(EMBED_SEQS as u32)
+                            .with_kv_unified(true); // any one text may use the whole context
                         emb_ctx = Some(embed_model.get().unwrap().new_context(backend, p).map_err(|e| anyhow!("embedding context: {e}"))?);
                     }
                     let (ctx, m) = (emb_ctx.as_mut().unwrap(), embed_model.get().unwrap());
-                    texts.iter().map(|t| embed_one(ctx, m, t)).collect()
+                    embed_all(ctx, m, &texts)
                 })();
                 let _ = out.send(r);
             }
@@ -429,10 +482,12 @@ fn run(backend: &LlamaBackend, chat: &Option<PathBuf>, embed: &Option<PathBuf>, 
                             let _ = chat_model.set(load(backend, path)?);
                         }
                         let m = chat_model.get().unwrap();
-                        let p = LlamaContextParams::default().with_n_ctx(NonZeroU32::new(CTX_TOKENS)).with_n_seq_max(SEQS as u32)
+                        let cells = std::env::var("AXIOM_ENGINE_CTX").ok().and_then(|v| v.parse().ok()).unwrap_or(CTX_TOKENS);
+                        let p = LlamaContextParams::default().with_n_ctx(NonZeroU32::new(cells)).with_n_seq_max(SEQS as u32)
                             .with_kv_unified(true).with_n_batch(BATCH as u32);
                         let ctx = m.new_context(backend, p).map_err(|e| anyhow!("chat context: {e}"))?;
-                        live = Some(Chat { m, ctx, seqs: (0..SEQS).map(|_| None).collect(), streams: vec![], waiting: vec![] });
+                        let (cells, limit) = (ctx.n_ctx() as i32, ctx.n_ctx().min(m.n_ctx_train()) as i32);
+                        live = Some(Chat { m, ctx, cells, limit, seqs: (0..SEQS).map(|_| None).collect(), streams: vec![], waiting: vec![] });
                     }
                     Ok(())
                 })();
@@ -445,19 +500,39 @@ fn run(backend: &LlamaBackend, chat: &Option<PathBuf>, embed: &Option<PathBuf>, 
     }
 }
 
-/// Mean-pooled (or the model's own pooling), L2-normalised embedding of one text.
-fn embed_one(ctx: &mut LlamaContext, m: &LlamaModel, text: &str) -> Result<Vec<f32>> {
-    let mut tokens = m.vocab().tokenize(text.as_bytes(), true, false);
-    tokens.truncate(BATCH);
-    ctx.kv_cache_seq_rm(0, None, None)?;
-    let mut batch = LlamaBatch::new(tokens.len(), 1);
-    for (i, t) in tokens.iter().enumerate() {
-        batch.add(*t, i as i32, &[0], true)?;
+/// Embeddings of `texts` (each cut to `BATCH` tokens), L2-normalised, with the model's own pooling. Texts
+/// share a decode: up to `EMBED_SEQS` of them per batch, one sequence each.
+fn embed_all(ctx: &mut LlamaContext, m: &LlamaModel, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+    let tokens: Vec<_> = texts.iter().map(|t| {
+        let mut v = m.vocab().tokenize(t.as_bytes(), true, false);
+        v.truncate(BATCH);
+        v
+    }).collect();
+    let mut out = Vec::with_capacity(texts.len());
+    let mut i = 0;
+    while i < tokens.len() {
+        // as many texts as fit in one batch
+        let (mut n, mut size) = (0, 0);
+        while i + n < tokens.len() && n < EMBED_SEQS && size + tokens[i + n].len() <= BATCH {
+            size += tokens[i + n].len();
+            n += 1;
+        }
+        ctx.clear_kv_cache();
+        let mut batch = LlamaBatch::new(size.max(1), 1);
+        for (seq, toks) in tokens[i..i + n].iter().enumerate() {
+            for (pos, t) in toks.iter().enumerate() {
+                batch.add(*t, pos as i32, &[seq as i32], true)?;
+            }
+        }
+        ctx.decode(&mut batch)?;
+        for seq in 0..n {
+            let v = ctx.embeddings_seq_ith(seq as i32).map_err(|e| anyhow!("no pooled embedding: {e}"))?;
+            let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-12);
+            out.push(v.iter().map(|x| x / norm).collect());
+        }
+        i += n;
     }
-    ctx.decode(&mut batch)?;
-    let v = ctx.embeddings_seq_ith(0).map_err(|e| anyhow!("no pooled embedding: {e}"))?;
-    let n = v.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-12);
-    Ok(v.iter().map(|x| x / n).collect())
+    Ok(out)
 }
 
 #[cfg(test)]
