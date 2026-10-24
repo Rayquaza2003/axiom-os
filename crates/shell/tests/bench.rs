@@ -1,4 +1,4 @@
-//! Bench gate: against a model server that serves one request at a time, axiomd keeps interactive requests
+//! Bench gate: against a model server that serves one request at a time, axion keeps interactive requests
 //! fast under background load. Run: cargo test
 use axiom_shell::bench::{self, Workload};
 use core_ai::{NpuBackend, BACKGROUND, INTERACTIVE};
@@ -44,15 +44,15 @@ const WORK: Workload = Workload {
 };
 
 #[test]
-fn axiomd_keeps_interactive_requests_fast_under_load() {
+fn axion_keeps_interactive_requests_fast_under_load() {
     let tmp = tempfile::tempdir().unwrap();
     let phases = bench::run(tmp.path(), std::sync::Arc::new(OneSlot::new()), &[&WORK], 2.0, &|_| {}).unwrap().remove(0);
     let p95 = |i: usize| axiom_shell::daemon::percentile(&mut phases[i].probes.clone(), 0.95);
     let labels: Vec<&str> = phases.iter().map(|p| p.label).collect();
-    assert_eq!(labels, ["no load", "direct", "through axiomd"]);
+    assert_eq!(labels, ["no load", "direct", "through axion"]);
     assert!(p95(0) < 0.05, "an idle server answers a probe at once: {}", p95(0));
-    // direct: a probe waits out the 64-text batch ahead of it; through axiomd: at most one 16-text chunk
-    assert!(p95(1) > 2.0 * p95(2), "direct p95 {:.3}s vs axiomd p95 {:.3}s", p95(1), p95(2));
+    // direct: a probe waits out the 64-text batch ahead of it; through axion: at most one 16-text chunk
+    assert!(p95(1) > 2.0 * p95(2), "direct p95 {:.3}s vs axion p95 {:.3}s", p95(1), p95(2));
     assert!(phases[1].units > 0 && phases[2].units > 0, "background work still progresses");
-    assert!(bench::render(&WORK, &phases).contains("through axiomd vs direct: interactive p95"));
+    assert!(bench::render(&WORK, &phases).contains("through axion vs direct: interactive p95"));
 }

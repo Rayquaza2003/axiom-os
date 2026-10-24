@@ -1,4 +1,4 @@
-//! axiomd gate: one NRM for every process, OpenAI-compatible API behind per-client keys. Run: cargo test
+//! axion gate: one NRM for every process, OpenAI-compatible API behind per-client keys. Run: cargo test
 use axiom_shell::{daemon, Axiom};
 use core_ai::{LocalBackend, NpuBackend, BACKGROUND, INTERACTIVE, REALTIME};
 use serde_json::Value;

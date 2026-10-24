@@ -22,7 +22,7 @@ log "fetch=$(printf '%s' "$reply" | tr -d '"\\')"
 echo pwned > /tmp/axiom-app-probe 2>/dev/null; w=$?
 cat "$2/axiom.db" >/dev/null 2>&1; r=$?
 nc -z -w1 127.0.0.1 "$1" >/dev/null 2>&1; n=$?
-printf '\000\000\000\017{"op":"status"}' | nc -U "$2/axiomd.sock" >/dev/null 2>&1; u=$?
+printf '\000\000\000\017{"op":"status"}' | nc -U "$2/axion.sock" >/dev/null 2>&1; u=$?
 log "probe write=$w read=$r net=$n ipc=$u"
 "#;
 
@@ -32,7 +32,7 @@ fn probe(port: &str, home: &Path) -> (bool, bool, bool, bool) {
         sh("echo x > /tmp/axiom-app-probe-control"),
         sh(&format!("cat {}/axiom.db >/dev/null", home.display())),
         sh(&format!("nc -z -w1 127.0.0.1 {port}")),
-        sh(&format!(r#"printf '\000\000\000\017{{"op":"status"}}' | nc -U {}/axiomd.sock >/dev/null"#, home.display())),
+        sh(&format!(r#"printf '\000\000\000\017{{"op":"status"}}' | nc -U {}/axion.sock >/dev/null"#, home.display())),
     )
 }
 
@@ -55,7 +55,7 @@ fn apps_are_denied_by_default_and_sandboxed() {
     std::fs::write(src.join("manifest.json"),
         r#"{"name":"probe","cmd":["sh","main.sh"],"requires":["search","tag","generate","egress:evil.example"]}"#).unwrap();
 
-    // a listener and an axiomd socket the app could reach if the sandbox let it (apps go through the broker)
+    // a listener and an axion socket the app could reach if the sandbox let it (apps go through the broker)
     let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = l.local_addr().unwrap().port().to_string();
     axiom_shell::daemon::start(&home, Arc::new(LocalBackend::offline()), None).unwrap();

@@ -193,7 +193,7 @@ pub fn exists(path: &Path) -> bool {
 
 const NET_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// TCP stream: length-prefixed messages (mesh), or one HTTP request and response (the axiomd API).
+/// TCP stream: length-prefixed messages (mesh), or one HTTP request and response (the axion API).
 pub struct Conn(std::net::TcpStream);
 
 pub struct Listener(std::net::TcpListener);

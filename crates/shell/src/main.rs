@@ -53,7 +53,7 @@ enum Cmd {
     },
     /// Sandboxed apps: install DIR | run NAME [ARGS..] | list | revoke NAME [CAP] | sign DIR | trust KEY
     App { action: AppAction, name: Option<String>, rest: Vec<String> },
-    /// System AI service (axiomd): status | install | uninstall | key NAME | revoke NAME
+    /// System AI service (axion): status | install | uninstall | key NAME | revoke NAME
     Daemon { action: DaemonAction, name: Option<String> },
     /// AI activity: which processes run local AI and their GPU, CPU, memory and Neural Engine use
     /// (cloud AI apps run elsewhere and do not show)
@@ -67,7 +67,7 @@ enum Cmd {
         #[arg(long)] watch: bool,
     },
     /// Measure: latency of small interactive AI requests under background AI load, sent straight to the
-    /// model server versus through axiomd (needs AXIOM_EMBED_MODEL and/or AXIOM_LLM_MODEL)
+    /// model server versus through axion (needs AXIOM_EMBED_MODEL and/or AXIOM_LLM_MODEL)
     Bench {
         /// Workload to run (default: every one the configured models allow)
         workload: Option<BenchKind>,
@@ -117,9 +117,9 @@ fn daemon_cmd(action: &DaemonAction, name: Option<&str>) -> Result<()> {
     let name = || name.ok_or_else(|| anyhow!("client name required"));
     match action {
         DaemonAction::Status => {
-            let s = daemon::status(&home)?.ok_or_else(|| anyhow!("axiomd is not running (run `axiomd`, or `axiom daemon install`)"))?;
+            let s = daemon::status(&home)?.ok_or_else(|| anyhow!("axion is not running (run `axion`, or `axiom daemon install`)"))?;
             let api = s["http"].as_str().map_or("off".into(), |a| format!("http://{a}/v1"));
-            println!("axiomd up {:.0}s, embedding dim {}, LLM {}, API {api}", s["uptime_s"].as_f64().unwrap_or(0.0), s["dim"],
+            println!("axion up {:.0}s, embedding dim {}, LLM {}, API {api}", s["uptime_s"].as_f64().unwrap_or(0.0), s["dim"],
                      if s["llm"] == true { "on" } else { "off" });
             let q = &s["queued"];
             println!("queued now: realtime {}, interactive {}, background {}", q["realtime"], q["interactive"], q["background"]);
@@ -138,14 +138,14 @@ fn daemon_cmd(action: &DaemonAction, name: Option<&str>) -> Result<()> {
             println!("clients: {}", if clients.is_empty() { "none".into() } else { clients.join(", ") });
         }
         DaemonAction::Install => {
-            let exe = std::env::current_exe()?.with_file_name("axiomd");
+            let exe = std::env::current_exe()?.with_file_name("axion");
             if !platform::exists(&exe) {
                 bail!("{} not found (run `cargo build --release`)", exe.display());
             }
             // launchd starts in /, so the home is pinned as an absolute path
             let mut env: Vec<(String, String)> = std::env::vars().filter(|(k, _)| k.starts_with("AXIOM_") && k != "AXIOM_HOME").collect();
             env.push(("AXIOM_HOME".into(), platform::abspath(&home).to_string_lossy().into()));
-            let plist = platform::service_install(daemon::LABEL, &exe, &env, &home.join("axiomd.log"))?;
+            let plist = platform::service_install(daemon::LABEL, &exe, &env, &home.join("axion.log"))?;
             let keys: Vec<&str> = env.iter().map(|(k, _)| k.as_str()).collect();
             println!("installed {} (starts at login, restarts if it stops)\nsettings copied: {}", plist.display(),
                      if keys.is_empty() { "none (defaults)".into() } else { keys.join(", ") });

@@ -17,7 +17,7 @@ pub trait NpuBackend: Send + Sync {
     fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>>;
     fn has_llm(&self) -> bool;
     fn generate(&self, prompt: &str) -> Result<String>;
-    /// The NRM calls these with the job's tier. A device backend ignores it; the axiomd client forwards
+    /// The NRM calls these with the job's tier. A device backend ignores it; the axion client forwards
     /// it, so the daemon schedules this process's jobs against every other process's.
     fn embed_at(&self, _tier: u8, texts: &[String]) -> Result<Vec<Vec<f32>>> {
         self.embed(texts)

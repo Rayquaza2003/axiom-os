@@ -10,7 +10,7 @@
 //! ponytail: a resumed generation re-sends its prompt and partial answer, and the server re-reads them
 //! when other work used its cache meanwhile; an engine that keeps paused sequences in memory avoids that.
 //!
-//! With axiomd running, the NRM that matters is the daemon's: a client process's backend forwards each
+//! With axion running, the NRM that matters is the daemon's: a client process's backend forwards each
 //! job's tier there, so all processes on the machine share one queue.
 use crate::NpuBackend;
 use anyhow::{anyhow, bail, Result};

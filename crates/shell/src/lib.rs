@@ -65,7 +65,7 @@ impl Axiom {
         Ok(ax)
     }
 
-    /// Inference goes to axiomd when it runs (one scheduler and one loaded model for the machine),
+    /// Inference goes to axion when it runs (one scheduler and one loaded model for the machine),
     /// otherwise to `default_backend` in this process.
     pub fn open_default(approve: Option<Approve>) -> Result<Axiom> {
         let home = platform::home()?;

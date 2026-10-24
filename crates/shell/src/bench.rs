@@ -1,6 +1,6 @@
 //! `axiom bench`: does the shared AI service help? Each workload runs three ways: with no load; with
 //! background load sent straight to the model server, the way every app calls it today; and with the same
-//! load through axiomd at background priority. Reported: latency of a small interactive request (p50, p95,
+//! load through axion at background priority. Reported: latency of a small interactive request (p50, p95,
 //! max), background throughput, and the GPU busy share and AI memory from the activity monitor.
 use crate::daemon::{fmt_secs, percentile};
 use crate::{daemon, monitor};
@@ -76,7 +76,7 @@ pub struct Phase {
     pub ai_memory: u64,
 }
 
-/// Runs each workload with no load, with load straight on `backend`, and with load through a private axiomd
+/// Runs each workload with no load, with load straight on `backend`, and with load through a private axion
 /// (serving from `home/bench`) on the same backend. `secs` is the length of each loaded phase.
 pub fn run(home: &Path, backend: Arc<dyn NpuBackend>, workloads: &[&Workload], secs: f64, progress: &dyn Fn(&str)) -> Result<Vec<Vec<Phase>>> {
     let dir = home.join("bench");
@@ -88,7 +88,7 @@ pub fn run(home: &Path, backend: Arc<dyn NpuBackend>, workloads: &[&Workload], s
         (w.probe)(&*backend)?;
         (w.load)(&*backend, 0)?;
         let mut phases = vec![];
-        for (label, b, loaded, s) in [("no load", &backend, false, secs.min(5.0)), ("direct", &backend, true, secs), ("through axiomd", &via, true, secs)] {
+        for (label, b, loaded, s) in [("no load", &backend, false, secs.min(5.0)), ("direct", &backend, true, secs), ("through axion", &via, true, secs)] {
             progress(&format!("{}: {label}, {s:.0}s", w.name));
             phases.push(phase(label, b.clone(), w, loaded, s)?);
         }
@@ -146,7 +146,7 @@ pub fn render(w: &Workload, phases: &[Phase]) -> String {
     if let [_, direct, via] = phases {
         let (r, t) = (p95(direct) / p95(via).max(1e-6), rate(via) / rate(direct).max(1e-9) - 1.0);
         let speed = if r >= 1.0 { format!("{r:.1}x lower") } else { format!("{:.1}x higher", 1.0 / r) };
-        out += &format!("  through axiomd vs direct: interactive p95 {speed}, background throughput {:+.0}%\n", t * 100.0);
+        out += &format!("  through axion vs direct: interactive p95 {speed}, background throughput {:+.0}%\n", t * 100.0);
     }
     out
 }

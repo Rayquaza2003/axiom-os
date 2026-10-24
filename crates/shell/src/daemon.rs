@@ -1,4 +1,4 @@
-//! axiomd: AI as a system resource. One daemon per user owns the model and the NRM. Axiom processes
+//! axion: AI as a system resource. One daemon per user owns the model and the NRM. Axiom processes
 //! reach it over a unix socket (mode 0600: this user only); other programs over an OpenAI-compatible
 //! HTTP API, each with its own API key.
 //!
@@ -20,13 +20,13 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-pub const SOCK: &str = "axiomd.sock";
+pub const SOCK: &str = "axion.sock";
 /// launchd label of the login service.
-pub const LABEL: &str = "dev.axiom.axiomd";
+pub const LABEL: &str = "dev.axiom.axion";
 const HTTP_DEFAULT: &str = "127.0.0.1:7779";
 const MAX_MSG: usize = 64 << 20;
 const MAX_BODY: usize = 32 << 20;
-/// The one model the HTTP API lists. Requests may name any model; axiomd serves the one it was started with.
+/// The one model the HTTP API lists. Requests may name any model; axion serves the one it was started with.
 const MODEL: &str = "axiom";
 
 /// Address of the OpenAI-compatible API: `AXIOM_HTTP`, default 127.0.0.1:7779.
@@ -64,7 +64,7 @@ struct Daemon {
 pub fn start(home: &Path, backend: Arc<dyn NpuBackend>, http: Option<&str>) -> Result<Option<String>> {
     let local = platform::listen_local(&home.join(SOCK))?;
     // a busy port must not take the socket (and every Axiom process) down with it
-    let http = http.and_then(|a| platform::listen(a).map_err(|e| eprintln!("axiomd: no HTTP API on {a}: {e}")).ok());
+    let http = http.and_then(|a| platform::listen(a).map_err(|e| eprintln!("axion: no HTTP API on {a}: {e}")).ok());
     let d = Arc::new(Daemon {
         home: home.to_path_buf(),
         nrm: Nrm::new(backend, AGING_S),
@@ -89,7 +89,7 @@ fn accept_loop<C: Send + 'static>(d: Arc<Daemon>, accept: impl Fn() -> Result<C>
                 std::thread::spawn(move || serve(&d, c));
             }
             Err(e) => {
-                eprintln!("axiomd: accept: {e}");
+                eprintln!("axion: accept: {e}");
                 std::thread::sleep(std::time::Duration::from_millis(100));
             }
         }
@@ -179,7 +179,7 @@ impl Daemon {
         // None: the handler streamed its own response
         let Some((status, ctype, body)) = reply else { return };
         if status >= 500 {
-            eprintln!("axiomd: HTTP {status}: {}", String::from_utf8_lossy(&body));
+            eprintln!("axion: HTTP {status}: {}", String::from_utf8_lossy(&body));
         }
         let _ = c.http_respond(status, ctype, &body);
     }
@@ -227,7 +227,7 @@ impl Daemon {
     /// `None` when it streamed the answer itself (`stream: true`).
     fn chat(&self, client: &str, body: &Value, c: &mut Conn) -> Option<Reply> {
         if !self.nrm.backend.has_llm() {
-            return Some(error(503, "no LLM configured (start axiomd with AXIOM_LLM_MODEL set)"));
+            return Some(error(503, "no LLM configured (start axion with AXIOM_LLM_MODEL set)"));
         }
         let Some(prompt) = prompt_of(&body["messages"]) else {
             return Some(error(400, "messages must be a non-empty list of {role, content}"));
@@ -311,7 +311,7 @@ fn key_owner(home: &Path, key: &str) -> Option<String> {
 
 // --- client ----------------------------------------------------------------------------------------
 
-/// This process's handle on axiomd: embed and generate run there, at the caller's NRM tier.
+/// This process's handle on axion: embed and generate run there, at the caller's NRM tier.
 pub struct DaemonBackend {
     sock: PathBuf,
     dim: usize,
@@ -322,7 +322,7 @@ fn request(mut c: LocalConn, req: &Value) -> Result<Value> {
     c.send(req.to_string().as_bytes())?;
     let mut reply: Value = serde_json::from_slice(&c.recv(MAX_MSG)?)?;
     match reply["error"].as_str() {
-        Some(e) => Err(anyhow!("axiomd: {e}")),
+        Some(e) => Err(anyhow!("axion: {e}")),
         None => Ok(reply["ok"].take()),
     }
 }
@@ -332,7 +332,7 @@ pub fn connect(home: &Path) -> Result<Option<DaemonBackend>> {
     let sock = home.join(SOCK);
     let Ok(c) = platform::dial_local(&sock) else { return Ok(None) };
     let info = request(c, &json!({"op": "info"}))?;
-    let dim = info["dim"].as_u64().ok_or_else(|| anyhow!("axiomd sent no embedding dim"))? as usize;
+    let dim = info["dim"].as_u64().ok_or_else(|| anyhow!("axion sent no embedding dim"))? as usize;
     Ok(Some(DaemonBackend { sock, dim, llm: info["llm"] == true }))
 }
 
