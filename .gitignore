@@ -3,3 +3,4 @@ __pycache__/
 .idea/
 .claude/
 target/
+dist/
