@@ -19,7 +19,7 @@ fn paused_generations_resume_without_rereading_their_prompt() {
         eprintln!("skipped: set AXIOM_ENGINE_MODEL to run");
         return;
     };
-    let e = Engine::load(Some(resolve(&spec).unwrap()), None).unwrap();
+    let e = Engine::load(Some(resolve(&spec).unwrap()), None, std::time::Duration::from_secs(2)).unwrap();
     let long = format!("{}\nIn one sentence, what is this text about?", "The lighthouse keeper logged every passing ship. ".repeat(60));
     let (a, prefill, _) = slice(&e, &long, "", 8);
     assert!(!a.is_empty());
@@ -37,4 +37,37 @@ fn paused_generations_resume_without_rereading_their_prompt() {
         }
     }
     assert!(whole.len() > 20, "{whole}");
+
+    // idle past 2 s frees the model; the next request loads it again
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    assert!(!e.generate("Name a colour.").unwrap().is_empty(), "the model reloads on demand");
+}
+
+#[test]
+fn generations_run_side_by_side_in_one_batch() {
+    let Ok(spec) = std::env::var("AXIOM_ENGINE_MODEL") else {
+        eprintln!("skipped: set AXIOM_ENGINE_MODEL to run");
+        return;
+    };
+    let e = std::sync::Arc::new(Engine::load(Some(resolve(&spec).unwrap()), None, std::time::Duration::from_secs(60)).unwrap());
+    e.generate("Say hi.").unwrap(); // load the model
+    let t = std::time::Instant::now();
+    let alone = { e.generate("Reply with one word: ready").unwrap(); t.elapsed().as_secs_f64() };
+    let bg: Vec<_> = (0..3).map(|i| {
+        let e = e.clone();
+        std::thread::spawn(move || {
+            let r = e.generate(&format!("Write a 150-word story about river number {i}.")).unwrap();
+            (r, std::time::Instant::now())
+        })
+    }).collect();
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let t = std::time::Instant::now();
+    e.generate("Reply with one word: ready").unwrap();
+    let (busy, answered) = (t.elapsed().as_secs_f64(), std::time::Instant::now());
+    for h in bg {
+        let (story, done) = h.join().unwrap();
+        assert!(story.split_whitespace().count() > 50, "{story}");
+        assert!(done > answered, "the quick answer came while the stories were still running");
+    }
+    assert!(busy < alone * 4.0 + 0.5, "with 3 answers running it took {busy:.2}s, alone {alone:.2}s: it waited instead of joining the batch");
 }
