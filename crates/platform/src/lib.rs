@@ -101,6 +101,15 @@ pub fn http_lines(url: &str, payload: &Value, timeout_s: u64, line: &mut dyn FnM
     Ok(())
 }
 
+/// Runs `f` at normal process exit, before exit handlers registered earlier (such as C++ static teardown
+/// of libraries loaded before this call).
+pub fn at_exit(f: extern "C" fn()) {
+    unsafe extern "C" {
+        fn atexit(f: extern "C" fn()) -> i32;
+    }
+    unsafe { atexit(f) };
+}
+
 /// Text-to-speech through the host. Best effort: silent if no synthesizer exists.
 pub fn speak(text: &str) {
     for cmd in ["say", "espeak"] {
