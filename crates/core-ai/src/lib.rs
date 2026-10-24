@@ -30,6 +30,10 @@ pub trait NpuBackend: Send + Sync {
     fn batches(&self) -> bool {
         false
     }
+    /// One line on what the backend has loaded and why, for `axiom daemon status`.
+    fn describe(&self) -> String {
+        String::new()
+    }
     /// Streams up to `max_tokens` more of the answer to `prompt`, continuing after `prefix` (the part already
     /// generated; empty at first). Each piece goes to `piece`, which returns false to stop at once (the
     /// caller went away). `Ok(true)` when the answer is complete; `Ok(false)` when it stopped or reached

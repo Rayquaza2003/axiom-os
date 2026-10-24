@@ -121,6 +121,9 @@ fn daemon_cmd(action: &DaemonAction, name: Option<&str>) -> Result<()> {
             let api = s["http"].as_str().map_or("off".into(), |a| format!("http://{a}/v1"));
             println!("axion up {:.0}s, embedding dim {}, LLM {}, API {api}", s["uptime_s"].as_f64().unwrap_or(0.0), s["dim"],
                      if s["llm"] == true { "on" } else { "off" });
+            if let Some(b) = s["backend"].as_str().filter(|b| !b.is_empty()) {
+                println!("{b}");
+            }
             let q = &s["queued"];
             println!("queued now: realtime {}, interactive {}, background {}", q["realtime"], q["interactive"], q["background"]);
             println!("recent jobs        jobs   wait p50   wait p95   run total");

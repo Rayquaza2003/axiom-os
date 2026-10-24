@@ -164,6 +164,7 @@ impl Daemon {
             "uptime_s": platform::now() - self.started,
             "dim": self.nrm.backend.dim(),
             "llm": self.nrm.backend.has_llm(),
+            "backend": self.nrm.backend.describe(),
             "http": self.http,
             "queued": {"realtime": rt, "interactive": ia, "background": bg},
             "recent": {"realtime": tier(REALTIME), "interactive": tier(INTERACTIVE), "background": tier(BACKGROUND)},
