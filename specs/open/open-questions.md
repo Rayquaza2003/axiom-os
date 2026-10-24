@@ -24,7 +24,7 @@ kernel questions are deferred until the prototype proves out.
 
 Prototype status: Rust workspace (`platform`, `core-data`, `core-ai`, `mesh`, `shell`, `app-sdk`). Built: P2 (Blake3 + FastCDC objects,
 graph with replicated deletions, copy-on-write snapshots), P3 (NRM with chunk-level preemption, rule planner refined by an LLM when one is
-configured, egress firewall, `axiomd`: one model and one NRM queue per machine, with a unix socket for Axiom processes, an
+configured, egress firewall, `axion`: one model and one NRM queue per machine, with a unix socket for Axiom processes, an
 OpenAI-compatible HTTP API behind per-client keys, and a macOS LaunchAgent; an AI activity monitor with per-process GPU, CPU,
 memory and Neural Engine use, which finds model holders by command line, mapped files and file content), P4 (Noise NNpsk0 pairing with a shared key shown as hex + QR; objects union, edges LWW, tombstones;
 relay for NAT, address-list failover; session roaming of workspaces, active workspace and clipboard; resource broker for
@@ -33,9 +33,9 @@ under sandbox-exec or bwrap; wasm apps on wasmi; Rust SDK; ed25519-signed bundle
 Not built: kernel and drivers (P0/P1, by decision P0.1), UDP hole punching, MPTCP / cellular failover, credit limits (jobs are counted,
 not capped), Swift/Kotlin SDKs, WebGPU/WebNN for wasm apps, a hosted app catalog, gaze-based audio routing.
 Known gaps: offline embeddings are lexical (semantic needs an OpenAI-compatible server); a resumed generation re-reads its context on
-Ollama (the built-in llama.cpp engine keeps it and batches up to 4 generations; embeddings are not batched yet);
+Ollama (the built-in llama.cpp engine keeps it, and batches up to 4 generations and 16 embeddings);
 snapshots are only O(1) on copy-on-write filesystems; the Linux sandbox path is untested; wasm apps get a fixed fuel budget (~2s CPU);
-the axiomd API flattens chat roles into one prompt; axiomd has no Linux/Windows service yet.
+the axion API flattens chat roles into one prompt; axion has no Linux/Windows service yet.
 ---
 
 ## P0 — Kernel
