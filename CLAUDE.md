@@ -16,6 +16,7 @@ Architecture blueprint in `specs/` plus a working personal prototype: Rust works
 - `axiom daemon install` registers a macOS LaunchAgent (`dev.axiom.axiomd`: starts at login, restarts if it exits). It copies the shell's `AXIOM_*` variables. Log: `$AXIOM_HOME/axiomd.log`.
 - OpenAI-compatible API on `AXIOM_HTTP` (default `127.0.0.1:7779`): `/v1/models`, `/v1/chat/completions`, `/v1/embeddings`. Every request needs a key from `axiom daemon key NAME`. Only the key's hash is stored, in `daemon.db`. A key reaches inference only, never the store. `stream: true` streams tokens (chunked SSE); a client that hangs up cancels its generation.
 - The NRM generates in 8-token slices (`SLICE_TOKENS`, `generate_stream` with `max_tokens`). Between slices, a waiting higher-tier job runs first, then the generation resumes by sending its partial answer as a trailing assistant message. Aging orders the queue but never shields a running job from a higher tier.
+- Built-in engine (`crates/engine`, default `engine` feature of `axiom-shell`): llama.cpp with Metal in-process, chosen by `AXIOM_ENGINE_MODEL` / `AXIOM_ENGINE_EMBED` (GGUF path or `ollama:NAME[:TAG]`, resolved from Ollama's manifests). One thread owns llama.cpp; each generation is a sequence whose KV cache survives a pause (4 kept, LRU), so a resume does not re-read the prompt. Model test: `AXIOM_ENGINE_MODEL=ollama:qwen2.5:3b-instruct cargo test -p engine`. An exit hook (`platform::at_exit`) frees GPU memory before ggml's Metal teardown, which otherwise asserts.
 - macOS limits unix socket paths to 104 bytes, so keep `AXIOM_HOME` short.
 
 ## AI activity monitor
@@ -55,4 +56,5 @@ Architecture blueprint in `specs/` plus a working personal prototype: Rust works
 - `core-ai` P3: `NpuBackend`/`LocalBackend`, `Nrm` (priority tiers + aging), planner, summarizer, egress firewall.
 - `mesh` P4: encrypted two-device sync (`sync`, `serve_one`).
 - `shell` P5/P6: `Axiom` facade, CLI (`axiom`), TUI, `apps` sandbox broker + wasm runtime + signing, `daemon` (`axiomd` server and its client backend), `monitor` (AI activity monitor).
+- `engine` P3: llama.cpp in-process (Metal), an `NpuBackend` with resumable sequences.
 - `app-sdk` P6: `axiom-app` crate for app authors (native and wasm32).

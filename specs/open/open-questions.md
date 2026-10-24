@@ -33,7 +33,7 @@ under sandbox-exec or bwrap; wasm apps on wasmi; Rust SDK; ed25519-signed bundle
 Not built: kernel and drivers (P0/P1, by decision P0.1), UDP hole punching, MPTCP / cellular failover, credit limits (jobs are counted,
 not capped), Swift/Kotlin SDKs, WebGPU/WebNN for wasm apps, a hosted app catalog, gaze-based audio routing.
 Known gaps: offline embeddings are lexical (semantic needs an OpenAI-compatible server); a resumed generation re-reads its context on
-Ollama (8-token slices; an in-process engine would keep it);
+Ollama (the built-in llama.cpp engine keeps it, but runs one generation at a time, no shared batch yet);
 snapshots are only O(1) on copy-on-write filesystems; the Linux sandbox path is untested; wasm apps get a fixed fuel budget (~2s CPU);
 the axiomd API flattens chat roles into one prompt; axiomd has no Linux/Windows service yet.
 ---
