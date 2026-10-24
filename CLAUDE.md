@@ -8,15 +8,16 @@ Architecture blueprint in `specs/` plus a working personal prototype: Rust works
 - Gate test: `cargo test`
 - CLI: `cargo run --release -- import DIR | ask "summarize Q3 docs" [--cloud URL] [--save] [--speak] | tag | untag | ws save|open|list | clip push|pull|show | brief [--speak] | snapshot | rollback | egress log|allow|budget | tui | mesh key|join HEX|serve ADDR [--jobs]|sync ADDR[,ADDR]|relay ADDR | app install DIR|run NAME [ARGS]|list|revoke NAME [CAP]|sign DIR|trust KEY | daemon status|install|uninstall|key NAME|revoke NAME | monitor [SECS] [--all] [--watch] | bench [embed|generate] [--secs N]`
 - Data lives in `$AXIOM_HOME` (default `~/.axiom`).
+- Package: `packaging/macos/build-dmg.sh` writes `dist/Axiom-<version>.dmg` (Axiom.app with `axiom`, `axion` and a `setup` launcher that runs `axiom daemon install` from inside the app and links the CLI to `~/.local/bin`). Ad-hoc signed; `AXIOM_SIGN_ID` + `AXIOM_NOTARY_PROFILE` sign and notarize. `AXIOM_QUIET=1` makes setup print instead of showing a dialog.
 - Offline by default (lexical hash embeddings, extractive summaries). For real models point at any OpenAI-compatible server (llama-server with Metal, Ollama): `AXIOM_LLM_MODEL=<model>` for summaries, `AXIOM_EMBED_MODEL=<model>` for semantic vectors, `AXIOM_LLM_URL` / `AXIOM_EMBED_URL` (default `http://localhost:11434`). A store is tied to one embedding dimension.
 
-## axiomd (AI as a system resource)
+## axion (AI as a system resource)
 
-- `axiomd` (built by `cargo build --release`) owns the model and the one NRM queue for the user. `axiom` processes use it over `$AXIOM_HOME/axiomd.sock` (mode 0600) when it runs, passing each job's tier; otherwise they run inference in-process. While it runs, model settings (`AXIOM_*_MODEL/URL`, `AXIOM_OFFLOAD`) are the daemon's.
-- `axiom daemon install` registers a macOS LaunchAgent (`dev.axiom.axiomd`: starts at login, restarts if it exits). It copies the shell's `AXIOM_*` variables. Log: `$AXIOM_HOME/axiomd.log`.
+- `axion` (built by `cargo build --release`) owns the model and the one NRM queue for the user. `axiom` processes use it over `$AXIOM_HOME/axion.sock` (mode 0600) when it runs, passing each job's tier; otherwise they run inference in-process. While it runs, model settings (`AXIOM_*_MODEL/URL`, `AXIOM_OFFLOAD`) are the daemon's.
+- `axiom daemon install` registers a macOS LaunchAgent (`dev.axiom.axion`: starts at login, restarts if it exits). It copies the shell's `AXIOM_*` variables. Log: `$AXIOM_HOME/axion.log`.
 - OpenAI-compatible API on `AXIOM_HTTP` (default `127.0.0.1:7779`): `/v1/models`, `/v1/chat/completions`, `/v1/embeddings`. Every request needs a key from `axiom daemon key NAME`. Only the key's hash is stored, in `daemon.db`. A key reaches inference only, never the store. `stream: true` streams tokens (chunked SSE); a client that hangs up cancels its generation.
 - The NRM generates in 8-token slices (`SLICE_TOKENS`, `generate_stream` with `max_tokens`). Between slices, a waiting higher-tier job runs first, then the generation resumes by sending its partial answer as a trailing assistant message. Aging orders the queue but never shields a running job from a higher tier.
-- Built-in engine (`crates/engine`, default `engine` feature of `axiom-shell`): llama.cpp with Metal in-process, chosen by `AXIOM_ENGINE_MODEL` / `AXIOM_ENGINE_EMBED` (GGUF path or `ollama:NAME[:TAG]`, resolved from Ollama's manifests). One thread owns llama.cpp; up to 4 generations run as sequences in one batch (one token each per decode step), new requests prefill between steps and join at once, and waiting ones start in tier order. A paused sequence keeps its KV cache, so a resume does not re-read the prompt. `NpuBackend::batches()` is true for it, so the NRM passes generations straight through instead of slicing. Models load on first use and are freed after `AXIOM_ENGINE_IDLE` seconds idle (default 120). Model test: `AXIOM_ENGINE_MODEL=ollama:qwen2.5:3b-instruct cargo test -p engine`. An exit hook (`platform::at_exit`) frees GPU memory before ggml's Metal teardown, which otherwise asserts.
+- Built-in engine (`crates/engine`, default `engine` feature of `axiom-shell`): llama.cpp with Metal in-process, chosen by `AXIOM_ENGINE_MODEL` / `AXIOM_ENGINE_EMBED` (GGUF path or `ollama:NAME[:TAG]`, resolved from Ollama's manifests). One thread owns llama.cpp; up to 4 generations run as sequences in one batch (one token each per decode step), new requests prefill between steps and join at once, and waiting ones start in tier order. A paused sequence keeps its KV cache, so a resume does not re-read the prompt. `NpuBackend::batches()` is true for it, so the NRM passes generations straight through instead of slicing. Models load on first use and are freed after `AXIOM_ENGINE_IDLE` seconds idle (default 120). Embeddings batch up to 16 texts per decode. Generations share `AXIOM_ENGINE_CTX` tokens (default 8192); one answer may use all of it up to the model's trained length, and when it fills, paused sequences are dropped (LRU) before the longest running answer is cut off. Dropping an `Engine` frees its models at once. Model test: `AXIOM_ENGINE_MODEL=ollama:qwen2.5:3b-instruct cargo test -p engine`. An exit hook (`platform::at_exit`) frees GPU memory before ggml's Metal teardown, which otherwise asserts.
 - macOS limits unix socket paths to 104 bytes, so keep `AXIOM_HOME` short.
 
 ## AI activity monitor
@@ -28,7 +29,7 @@ Architecture blueprint in `specs/` plus a working personal prototype: Rust works
 
 ## Measuring
 
-- `axiom bench` runs each workload three ways: no load, background load sent straight to the model server, and the same load through a private axiomd (`$AXIOM_HOME/bench`). It reports interactive p50/p95/max, background throughput, GPU busy and AI memory. Workloads: `embed` (needs `AXIOM_EMBED_MODEL`) and `generate` (needs `AXIOM_LLM_MODEL`).
+- `axiom bench` runs each workload three ways: no load, background load sent straight to the model server, and the same load through a private axion (`$AXIOM_HOME/bench`). It reports interactive p50/p95/max, background throughput, GPU busy and AI memory. Workloads: `embed` (needs `AXIOM_EMBED_MODEL`) and `generate` (needs `AXIOM_LLM_MODEL`).
 - `axiom daemon status` shows queue wait p50/p95 and run time per tier over the last 1024 jobs (`Nrm::recent`), plus requests and time per client.
 - Results and their reading: README, "Measuring".
 
@@ -55,6 +56,6 @@ Architecture blueprint in `specs/` plus a working personal prototype: Rust works
 - `core-data` P2: Blake3 + FastCDC objects, graph edges, passage vectors, snapshots (one SQLite file).
 - `core-ai` P3: `NpuBackend`/`LocalBackend`, `Nrm` (priority tiers + aging), planner, summarizer, egress firewall.
 - `mesh` P4: encrypted two-device sync (`sync`, `serve_one`).
-- `shell` P5/P6: `Axiom` facade, CLI (`axiom`), TUI, `apps` sandbox broker + wasm runtime + signing, `daemon` (`axiomd` server and its client backend), `monitor` (AI activity monitor).
+- `shell` P5/P6: `Axiom` facade, CLI (`axiom`), TUI, `apps` sandbox broker + wasm runtime + signing, `daemon` (`axion` server and its client backend), `monitor` (AI activity monitor).
 - `engine` P3: llama.cpp in-process (Metal), an `NpuBackend` with resumable sequences.
 - `app-sdk` P6: `axiom-app` crate for app authors (native and wasm32).
