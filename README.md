@@ -5,7 +5,7 @@
 This repository holds two things:
 
 - **The blueprint** ([`specs/`](specs/)): the architecture of a complete operating system in seven planes, from a capability microkernel up to the app runtime. Every spec is tagged by feasibility, from "buildable today" to "research".
-- **A working prototype** ([`crates/`](crates/)): a Rust workspace that runs today as a layer on top of macOS. It implements the data plane, the AI core, the device mesh, the app runtime, a system AI daemon (`axiomd`) and an AI activity monitor.
+- **A working prototype** ([`crates/`](crates/)): a Rust workspace that runs today as a layer on top of macOS. It implements the data plane, the AI core, the device mesh, the app runtime, a system AI daemon (`axion`) and an AI activity monitor.
 
 > **Status:** personal prototype, v0.1. macOS on Apple Silicon is the tested platform. Most of it also runs on Linux, but parts of the Linux path are untested. Windows is not supported yet.
 
@@ -15,7 +15,7 @@ This repository holds two things:
 - [Architecture](#architecture)
 - [Getting started](#getting-started)
 - [Command reference](#command-reference)
-- [axiomd: AI as a system service](#axiomd-ai-as-a-system-service)
+- [axion: AI as a system service](#axion-ai-as-a-system-service)
 - [AI activity monitor](#ai-activity-monitor)
 - [Measuring: axiom bench](#measuring-axiom-bench)
 - [Device mesh](#device-mesh)
@@ -86,7 +86,7 @@ The prototype has no kernel of its own. It runs on a host OS, and the `platform`
             │ vectors                 │ with priority tier   │
             ▼                         ▼ (unix socket)        ▼
   ┌──────────────────┐   ┌────────────────────────────────────────────┐
-  │ core-data        │   │ axiomd: one NRM queue, one model backend   │
+  │ core-data        │   │ axion: one NRM queue, one model backend    │
   │ (one SQLite db)  │   └─────────────────────┬──────────────────────┘
   └─────────┬────────┘                         ▼
             │ mesh: Noise-encrypted     built-in llama.cpp engine, an
@@ -94,7 +94,7 @@ The prototype has no kernel of its own. It runs on a host OS, and the `platform`
       your other devices                or a paired device (AXIOM_OFFLOAD)
 ```
 
-When `axiomd` is not running, each Axiom process runs its own NRM in-process with the same backend.
+When `axion` is not running, each Axiom process runs its own NRM in-process with the same backend.
 
 | Crate | Plane | Responsibility |
 |---|---|---|
@@ -102,7 +102,7 @@ When `axiomd` is not running, each Axiom process runs its own NRM in-process wit
 | [`core-data`](crates/core-data) | P2 | Blake3 + FastCDC content-addressed objects, graph edges (tags, names, projects, provenance), passage vectors, FTS5 keyword index, replicated deletions (tombstones), copy-on-write snapshots; all in one SQLite file |
 | [`core-ai`](crates/core-ai) | P3 | `NpuBackend` trait and `LocalBackend`; the NRM (priority tiers, aging, chunk-level preemption); planner; summarizer; egress firewall |
 | [`mesh`](crates/mesh) | P4 | Noise NNpsk0 pairing, two-device sync, relay, address failover, resource broker, `RemoteBackend` for offloading inference |
-| [`shell`](crates/shell) | P5/P6 | The `Axiom` facade, the `axiom` CLI and TUI, the app broker (OS sandbox, wasm runtime, signing), `axiomd` and the AI activity monitor |
+| [`shell`](crates/shell) | P5/P6 | The `Axiom` facade, the `axiom` CLI and TUI, the app broker (OS sandbox, wasm runtime, signing), `axion` and the AI activity monitor |
 | [`engine`](crates/engine) | P3 | llama.cpp in-process (Metal): an `NpuBackend` that batches generations, keeps paused ones in memory, and loads models on demand |
 | [`app-sdk`](crates/app-sdk) | P6 | The `axiom-app` crate for app authors, native and wasm32 |
 
@@ -126,7 +126,7 @@ When `axiomd` is not running, each Axiom process runs its own NRM in-process wit
 - **Preemption:**
   - Embeddings run in 16-text chunks, so a higher-priority job waits for at most one chunk.
   - Generations stream in 8-token slices. Between slices, a waiting higher-tier job goes first, and the generation then resumes exactly where it stopped. On Ollama, slicing an uninterrupted answer costs nothing measurable: a 308-token answer took 0.88× as long in 16-token slices and came out identical.
-- **One queue:** with `axiomd` running, every process's jobs share the daemon's queue.
+- **One queue:** with `axion` running, every process's jobs share the daemon's queue.
 
 **Session roaming.** Workspaces, the active workspace and the clipboard are stored as graph edges, so they travel with every mesh sync. `axiom ws open` with no name reopens whatever workspace was last active, possibly on another device.
 
@@ -138,10 +138,27 @@ When `axiomd` is not running, each Axiom process runs its own NRM in-process wit
 - **A recent stable Rust.** Edition 2024 needs 1.85 or newer; development uses 1.98.
 - **Optional: Ollama**, or any OpenAI-compatible server, for real models. Without one, Axiom runs fully offline with lexical embeddings and extractive summaries.
 
+### Install from the .dmg (macOS)
+
+```sh
+./packaging/macos/build-dmg.sh     # writes dist/Axiom-<version>.dmg
+```
+
+1. Open the `.dmg` and drag `Axiom.app` to Applications.
+2. Open it once. Opening it:
+   - registers `axion` to start at login, running from inside the app;
+   - links the `axiom` command to `~/.local/bin/axiom`;
+   - uses `qwen2.5:3b-instruct` and `nomic-embed-text` if Ollama has already downloaded them. Set `AXIOM_ENGINE_MODEL` / `AXIOM_ENGINE_EMBED` before opening to choose others.
+3. A dialog confirms what was set up. Opening it again redoes setup.
+
+To remove it, run `axiom daemon uninstall`, then delete the app and `~/.local/bin/axiom`.
+
+The `.dmg` is ad-hoc signed, which is enough on the Mac that built it. Other Macs refuse an app that is not notarized. To ship it, set `AXIOM_SIGN_ID` (a "Developer ID Application" identity, from the Apple Developer Program) and `AXIOM_NOTARY_PROFILE` (a `xcrun notarytool store-credentials` profile). The same script then signs with the hardened runtime, notarizes and staples.
+
 ### Build and test
 
 ```sh
-cargo build --release      # builds target/release/axiom and target/release/axiomd
+cargo build --release      # builds target/release/axiom and target/release/axion
 cargo test                 # gate tests
 ```
 
@@ -176,11 +193,11 @@ The built-in engine runs llama.cpp (Metal) in-process, so no model server is nee
 ```sh
 export AXIOM_ENGINE_MODEL=ollama:qwen2.5:3b-instruct   # or /path/to/model.gguf
 export AXIOM_ENGINE_EMBED=ollama:nomic-embed-text
-axiomd
+axion
 ```
 
-- **Batching:** up to 4 generations run side by side, and each step decodes one token for all of them in a single batch. A new request joins the batch at once, so a question never waits for another answer to finish. When all slots are busy, higher tiers start first.
-- **Memory:** each model loads when a request first needs it, so embedding never loads the chat model. Everything is freed after `AXIOM_ENGINE_IDLE` seconds without requests (default 120): an idle `axiomd` uses about 8 MB and no GPU.
+- **Batching:** up to 4 generations run side by side, and each step decodes one token for all of them in a single batch. Embeddings are batched too: up to 16 texts per decode. A new request joins the batch at once, so a question never waits for another answer to finish. When all slots are busy, higher tiers start first.
+- **Memory:** each model loads when a request first needs it, so embedding never loads the chat model. Everything is freed after `AXIOM_ENGINE_IDLE` seconds without requests (default 120): an idle `axion` uses about 8 MB and no GPU.
 - **Startup:** the first start compiles Metal shaders (about 10 s); later starts take about 2.5 s.
 - **Building without it:** `cargo build --release --no-default-features -p axiom-shell`.
 
@@ -201,22 +218,22 @@ axiomd
 | `axiom app install DIR` / `run NAME [ARGS]` / `list` / `revoke NAME [CAP]` / `sign DIR` / `trust KEY` | Sandboxed apps |
 | `axiom daemon status` / `install` / `uninstall` / `key NAME` / `revoke NAME` | The system AI service |
 | `axiom monitor [SECS] [--all] [--watch]` | AI activity monitor |
-| `axiom bench [embed or generate] [--secs N]` | Measure interactive latency under background AI load, straight to the model server versus through `axiomd` |
-| `axiomd` | Run the system AI service in the foreground |
+| `axiom bench [embed or generate] [--secs N]` | Measure interactive latency under background AI load, straight to the model server versus through `axion` |
+| `axion` | Run the system AI service in the foreground |
 
-## axiomd: AI as a system service
+## axion: AI as a system service
 
-`axiomd` holds the model and the single NRM queue for your user account. Every `axiom` process sends its AI work to it over `$AXIOM_HOME/axiomd.sock`, along with each job's priority tier. A question asked in one process therefore runs ahead of a background import running in another, and the model is loaded once. When the daemon is not running, processes fall back to in-process inference.
+`axion` holds the model and the single NRM queue for your user account. Every `axiom` process sends its AI work to it over `$AXIOM_HOME/axion.sock`, along with each job's priority tier. A question asked in one process therefore runs ahead of a background import running in another, and the model is loaded once. When the daemon is not running, processes fall back to in-process inference.
 
 ```sh
-axiomd                    # run in the foreground
+axion                    # run in the foreground
 axiom daemon install      # macOS LaunchAgent: starts at login, restarts if it exits
 axiom daemon status
 axiom daemon uninstall
 ```
 
 ```
-axiomd up 3s, embedding dim 768, LLM on, API http://127.0.0.1:7779/v1
+axion up 3s, embedding dim 768, LLM on, API http://127.0.0.1:7779/v1
 queued now: realtime 0, interactive 0, background 0
 recent jobs        jobs   wait p50   wait p95   run total
   realtime             0
@@ -254,7 +271,7 @@ print(reply.choices[0].message.content)
 
 Requests without a valid key get `401`. A key reaches inference only, never your data. The daemon adds about 45 µs per request (100 µs in the slowest 5%) and uses about 6 MB of memory without a model.
 
-**What it can and cannot capture.** A tool uses the daemon only if it is pointed at the daemon. Cloud AI apps (Claude, ChatGPT) run on remote servers. Apps with a built-in engine (LM Studio's chat, Draw Things) send work straight to the GPU. macOS lets no outside program take over another app's GPU work, so neither kind can be routed through `axiomd` today. The roadmap below covers how to reach further.
+**What it can and cannot capture.** A tool uses the daemon only if it is pointed at the daemon. Cloud AI apps (Claude, ChatGPT) run on remote servers. Apps with a built-in engine (LM Studio's chat, Draw Things) send work straight to the GPU. macOS lets no outside program take over another app's GPU work, so neither kind can be routed through `axion` today. The roadmap below covers how to reach further.
 
 ## AI activity monitor
 
@@ -292,7 +309,7 @@ A process counts as AI when it holds Neural Engine memory or model weights. Weig
 `axiom bench` answers one question: does sharing one AI service make AI faster for you? Each workload runs three ways:
 1. **No load:** interactive requests alone, as a baseline.
 2. **Direct:** background clients and interactive requests all call the model server themselves, the way apps do today.
-3. **Through axiomd:** the same traffic through a private `axiomd`, with the background clients at background priority.
+3. **Through axion:** the same traffic through a private `axion`, with the background clients at background priority.
 
 For each, it reports interactive latency (p50, p95, max), background throughput, and the GPU busy share and AI memory from the activity monitor.
 
@@ -309,10 +326,11 @@ axiom bench embed --secs 30
 
 Results on an Apple M1 (8 GB) with `qwen2.5:3b-instruct` and `nomic-embed-text`, served by Ollama 0.35 or by the built-in engine. Embed used 20 s phases; generate used 60 s phases (`--secs 60`):
 
-| Workload | Backend | Interactive p95, direct | Interactive p95, through axiomd | Background throughput |
+| Workload | Backend | Interactive p95, direct | Interactive p95, through axion | Background throughput |
 |---|---|---|---|---|
 | embed | Ollama | 1.83 s | **124 ms** | ±0% |
 | embed | built-in engine | 1.66 s | **275 ms** | ±0% |
+| embed | built-in engine, batched embeddings | 945 ms | **38 ms** | 89.6 texts/s, against 57.6 before (+56%) |
 | generate | Ollama | 13.66 s | **551 ms** | −12% |
 | generate | built-in engine, sliced | 11.45 s | **583 ms** | −19% |
 | generate | built-in engine, batched | (batched too) | **293 ms** | 0.47 replies/s, against 0.27 for Ollama direct (+74%) |
@@ -321,7 +339,7 @@ With no load, an interactive request takes about 20 ms (embed) and 100–150 ms 
 
 What this shows:
 - **Embeddings.** A search query waits for at most one 16-text chunk instead of a whole 128-text batch. `EMBED_CHUNK` in `crates/core-ai/src/nrm.rs` trades latency against throughput.
-- **Generation.** A reply waits for at most one 8-token slice of the background answers, so its p95 drops from over 10 s to about 0.55 s. Most of the background loss is the interactive work itself: through axiomd about 43 replies got answered, against 6 direct. This test sends one interactive request per second, far more than real use.
+- **Generation.** A reply waits for at most one 8-token slice of the background answers, so its p95 drops from over 10 s to about 0.55 s. Most of the background loss is the interactive work itself: through axion about 43 replies got answered, against 6 direct. This test sends one interactive request per second, far more than real use.
 - **Batching.** With the built-in engine, a question joins the running answers in one llama.cpp batch instead of taking turns. Its p95 (293 ms) is close to the no-load time (180 ms), and the background finishes 74% more work than Ollama serving the same clients one at a time, because one decode step serves every running answer. "Direct" is batched here too, because the engine itself batches; the comparison that matters is against the Ollama rows.
 - **Slices on the engine vs on Ollama.** The two score about the same here, because these prompts are short, so re-reading one after an interruption is cheap. The engine keeps paused answers in memory, so its resume cost does not grow with the prompt: with a 600-token prompt, a resumed slice started in under half the time of the first one (`crates/engine/tests/model.rs`). What it adds is no model server to run, and a resume cost that does not depend on prompt length.
 - **Preemption policy.** Pausing by cancelling the stream gave a slightly lower p95 (618 ms) but cost 75% of background throughput, because Ollama takes 0.4–1.3 s to cancel. Slices end cleanly instead.
@@ -422,10 +440,11 @@ A `--cloud` endpoint receives `{"prompt": ...}` and must reply with `{"response"
 | `AXIOM_EMBED_URL` | OpenAI-compatible server for embeddings | `http://localhost:11434` |
 | `AXIOM_OFFLOAD` | Run inference on a paired device (`host:port`, `relay://...`, or a comma list) | unset |
 | `AXIOM_AUDIO_SINK` | Play `--speak` on a paired device | unset |
-| `AXIOM_HTTP` | Address of the `axiomd` API | `127.0.0.1:7779` |
+| `AXIOM_HTTP` | Address of the `axion` API | `127.0.0.1:7779` |
 | `AXIOM_ENGINE_MODEL` | Chat model for the built-in engine: GGUF path or `ollama:NAME[:TAG]`. Takes precedence over `AXIOM_LLM_*` | unset |
 | `AXIOM_ENGINE_EMBED` | Embedding model for the built-in engine, same form | unset: lexical hash embeddings |
 | `AXIOM_ENGINE_IDLE` | Seconds without requests before the engine frees its models | `120` |
+| `AXIOM_ENGINE_CTX` | Tokens of context the engine's generations share (about 36 KB each for a 3B model) | `8192` |
 
 macOS limits unix socket paths to 104 bytes, so keep `AXIOM_HOME` short.
 
@@ -439,9 +458,9 @@ Everything lives in `$AXIOM_HOME`:
 | `snapshots/` | Copy-on-write snapshots of `axiom.db` |
 | `egress.db` | Egress allowlist, budget and audit log (not touched by rollback) |
 | `apps.db`, `apps/` | App grants, installs, trusted publishers and call audit; installed bundles |
-| `daemon.db` | Hashes of `axiomd` API keys |
+| `daemon.db` | Hashes of `axion` API keys |
 | `mesh.key`, `publisher.key` | Mesh key and app signing key (mode 0600) |
-| `axiomd.sock`, `axiomd.log` | Daemon socket (mode 0600) and the LaunchAgent's log |
+| `axion.sock`, `axion.log` | Daemon socket (mode 0600) and the LaunchAgent's log |
 
 ## Security model
 
@@ -474,8 +493,8 @@ These keep the layer portable to another kernel:
 | `shell/tests/gate.rs` | End to end: import, planner, hybrid search, egress firewall, NRM priority, aging and preemption |
 | `shell/tests/apps.rs` | Sandbox escapes (writes, reads, network, the daemon socket), grants, scoped and expiring capabilities, revocation, wasm apps, signing |
 | `shell/tests/daemon.rs` | Priority across processes, per-tier queue waits, per-client accounting, API keys, embeddings, chat, streaming, malformed requests, revocation |
-| `engine/tests/model.rs` | With `AXIOM_ENGINE_MODEL` set: answers built from slices, a paused answer surviving other work, a resume that skips re-reading the prompt, reloading after an idle unload, and a quick answer joining three running ones in one batch |
-| `shell/tests/bench.rs` | Against a one-slot model server, interactive p95 through `axiomd` is at least twice as low as direct, while background work still progresses |
+| `engine/tests/model.rs` | With `AXIOM_ENGINE_MODEL` set: answers built from slices, a paused answer surviving other work, a resume that skips re-reading the prompt, reloading after an idle unload, and a quick answer joining three running ones in one batch, a 3,000-token prompt, and batched embeddings matching single ones |
+| `shell/tests/bench.rs` | Against a one-slot model server, interactive p95 through `axion` is at least twice as low as direct, while background work still progresses |
 | `shell/tests/monitor.rs` | A process holding a model shows up with its counters |
 | `mesh/tests/sync.rs` | Merges in any order, tombstones, tampered objects, dimension mismatch, relay failover, offload |
 | unit tests | NRM preemption, resume and cancel; planner refinement; GGUF and model detection; IOKit parsing; SDK reply handling |
@@ -487,7 +506,7 @@ These keep the layer portable to another kernel:
 | Plane | What exists |
 |---|---|
 | P2 data | Objects, graph, tombstones, snapshots |
-| P3 AI core | NRM with sliced, preemptible generation; built-in llama.cpp engine with batching and on-demand loading; planner; summarizer; egress firewall; `axiomd` with token streaming and scheduling accounting; AI activity monitor; `axiom bench` |
+| P3 AI core | NRM with sliced, preemptible generation; built-in llama.cpp engine with batching and on-demand loading; planner; summarizer; egress firewall; `axion` with token streaming and scheduling accounting; AI activity monitor; `axiom bench` |
 | P4 mesh | Pairing, sync, relay, failover, session roaming, resource broker |
 | P5 session | CLI, TUI, briefing |
 | P6 runtime | Capability broker, native and wasm apps, Rust SDK, signing |
@@ -506,18 +525,17 @@ These keep the layer portable to another kernel:
 **Known gaps:**
 - **Offline embeddings are lexical.** Semantic search needs a model server.
 - **Resuming costs a re-read on Ollama.** After an interruption, a paused generation's context is read again. The built-in engine keeps it in memory instead.
-- **Engine limits.** It runs at most 4 generations at once, and an answer plus its prompt is capped at 2048 tokens. Embeddings are not batched across texts. Sampling settings are fixed, and it needs a chat template that llama.cpp knows.
+- **Engine limits.** It runs at most 4 generations at once. They share one context (`AXIOM_ENGINE_CTX`, default 8192 tokens): any one answer may use all of it, up to the model's trained length. When it fills, paused answers are dropped first; only if the running ones alone fill it does the longest one end with an error. Sampling settings are fixed, and it needs a chat template that llama.cpp knows.
 - **The daemon's API is simplified.** It flattens chat roles into one prompt.
 - **Backends without streaming can't be paused.** A generation on a backend that cannot stream (a paired device, for example) runs to the end.
 - **Snapshots are only O(1) on copy-on-write filesystems.**
 - **The Linux sandbox is untested.**
-- **The daemon runs on macOS only.** There is no Linux or Windows service for `axiomd` yet.
+- **The daemon runs on macOS only.** There is no Linux or Windows service for `axion` yet.
 
 **Next steps:**
-1. **Ship it.** A signed, notarized `.dmg` with `axiomd` and the engine registered at login.
-2. **Batch embeddings** in the engine, the way generations already are.
-3. **Windows.** Port the `platform` crate and ship an `.exe` installer.
-4. **Reach more AI apps.**
+1. **Notarize.** The `.dmg` exists (`packaging/macos/build-dmg.sh`); shipping it to other Macs needs a Developer ID and notarization, which the script already supports.
+2. **Windows.** Port the `platform` crate and ship an `.exe` installer.
+3. **Reach more AI apps.**
    - Serve the Ollama and LM Studio ports, identifying each caller by its process.
    - Add a Network Extension that makes the egress firewall system-wide for cloud AI apps.
    - On Linux, use eBPF, cgroups and GPU scheduler priorities to capture every local AI workload.
@@ -529,13 +547,14 @@ These keep the layer portable to another kernel:
 ├── Cargo.toml              workspace
 ├── README.md               this file
 ├── CLAUDE.md               working notes for coding agents: run commands, rules, crate map
+├── packaging/macos/        build-dmg.sh, the app's Info.plist and its first-launch setup
 ├── axiom-blueprint.html    visual overview of the blueprint (open in a browser)
 ├── crates/
 │   ├── platform/           host OS access; the only crate that touches the OS
 │   ├── core-data/          P2: object store, graph, vectors, snapshots
 │   ├── core-ai/            P3: NRM, planner, summarizer, egress firewall
 │   ├── mesh/               P4: device mesh and resource broker
-│   ├── shell/              P5/P6: CLI, TUI, apps, axiomd, AI monitor
+│   ├── shell/              P5/P6: CLI, TUI, apps, axion, AI monitor
 │   ├── engine/             P3: llama.cpp in-process (Metal)
 │   └── app-sdk/            P6: SDK for app authors
 └── specs/                  the blueprint
