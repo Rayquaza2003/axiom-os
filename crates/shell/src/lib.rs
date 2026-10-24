@@ -20,9 +20,14 @@ pub mod tui;
 pub const AGING_S: f64 = 30.0;
 
 /// This device's inference: `AXIOM_OFFLOAD=host:port` (or `relay://...`, comma list fails over) runs it on a
-/// paired device, otherwise `LocalBackend` (env-configured).
+/// paired device; else `AXIOM_ENGINE_MODEL` / `AXIOM_ENGINE_EMBED` run llama.cpp in this process; else
+/// `LocalBackend` (a model server, or offline).
 pub fn default_backend(home: &Path) -> Result<Arc<dyn NpuBackend>> {
     let Some(addr) = std::env::var("AXIOM_OFFLOAD").ok().filter(|v| !v.is_empty()) else {
+        #[cfg(feature = "engine")]
+        if let Some(e) = engine::Engine::from_env()? {
+            return Ok(Arc::new(e));
+        }
         return Ok(Arc::new(LocalBackend::from_env()?));
     };
     let (key, log, dest) = (mesh::load_or_create_key(home)?, home.join("egress.db"), addr.clone());
