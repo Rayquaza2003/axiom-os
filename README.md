@@ -197,7 +197,15 @@ axion
 ```
 
 - **Batching:** up to 4 generations run side by side, and each step decodes one token for all of them in a single batch. Embeddings are batched too: up to 16 texts per decode. A new request joins the batch at once, so a question never waits for another answer to finish. When all slots are busy, higher tiers start first.
-- **Memory:** each model loads when a request first needs it, so embedding never loads the chat model. Everything is freed after `AXIOM_ENGINE_IDLE` seconds without requests (default 120): an idle `axion` uses about 8 MB and no GPU.
+- **Fits the machine:** before loading a chat model, the engine reads its size, layer count and context memory from the GGUF header, then checks what the machine can give right now: free memory (halved under memory pressure) and the GPU's working set. It picks a plan and shows it in `axiom daemon status`:
+  - Enough room: all layers on the GPU, full context.
+  - Too little: only as many layers as fit go on the GPU. The rest run on the CPU from the memory-mapped model file, which the OS reads, and drops again, as needed.
+  - KV cache too big for the room: the context shrinks.
+
+  With the same 3B model, a 1 GB budget ran 8 of 36 layers on the GPU, while a normal day on this Mac ran all 36. `AXIOM_ENGINE_MEMORY` caps the budget, in MB.
+- **Memory over time:** each model loads when a request first needs it, so embedding never loads the chat model. The engine then unloads in two stages:
+  - After `AXIOM_ENGINE_IDLE` seconds idle (default 120), its contexts are freed but the model stays mapped. The next answer costs 0.1 s more.
+  - After `AXIOM_ENGINE_UNLOAD` seconds (default 900), or as soon as macOS reports memory pressure, the model goes too. Its file stays in the OS cache, so reloading costs about 0.7 s more. An idle `axion` uses about 8 MB and no GPU.
 - **Startup:** the first start compiles Metal shaders (about 10 s); later starts take about 2.5 s.
 - **Building without it:** `cargo build --release --no-default-features -p axiom-shell`.
 
@@ -443,7 +451,9 @@ A `--cloud` endpoint receives `{"prompt": ...}` and must reply with `{"response"
 | `AXIOM_HTTP` | Address of the `axion` API | `127.0.0.1:7779` |
 | `AXIOM_ENGINE_MODEL` | Chat model for the built-in engine: GGUF path or `ollama:NAME[:TAG]`. Takes precedence over `AXIOM_LLM_*` | unset |
 | `AXIOM_ENGINE_EMBED` | Embedding model for the built-in engine, same form | unset: lexical hash embeddings |
-| `AXIOM_ENGINE_IDLE` | Seconds without requests before the engine frees its models | `120` |
+| `AXIOM_ENGINE_IDLE` | Seconds without requests before the engine frees its contexts (models stay mapped) | `120` |
+| `AXIOM_ENGINE_UNLOAD` | Seconds idle before the engine unloads its models (sooner under memory pressure) | `900` |
+| `AXIOM_ENGINE_MEMORY` | Most memory, in MB, the engine plans to use, below what the machine has | unset |
 | `AXIOM_ENGINE_CTX` | Tokens of context the engine's generations share (about 36 KB each for a 3B model) | `8192` |
 
 macOS limits unix socket paths to 104 bytes, so keep `AXIOM_HOME` short.
