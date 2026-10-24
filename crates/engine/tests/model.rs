@@ -71,3 +71,42 @@ fn generations_run_side_by_side_in_one_batch() {
     }
     assert!(busy < alone * 4.0 + 0.5, "with 3 answers running it took {busy:.2}s, alone {alone:.2}s: it waited instead of joining the batch");
 }
+
+#[test]
+fn long_prompts_use_the_whole_context() {
+    let Ok(spec) = std::env::var("AXIOM_ENGINE_MODEL") else {
+        eprintln!("skipped: set AXIOM_ENGINE_MODEL to run");
+        return;
+    };
+    let e = Engine::load(Some(resolve(&spec).unwrap()), None, std::time::Duration::from_secs(60)).unwrap();
+    // about 3000 tokens: past the old 2048 share per answer
+    let notes = "Note: the harbour office opens at nine and the ferry leaves at noon. ".repeat(190);
+    let answer = e.generate(&format!("{notes}\nWhen does the ferry leave? Answer in a few words.")).unwrap();
+    assert!(answer.to_lowercase().contains("noon") || answer.contains("12"), "{answer}");
+    let too_long = "word ".repeat(40_000);
+    let err = e.generate(&too_long).unwrap_err().to_string();
+    assert!(err.contains("tokens"), "{err}");
+}
+
+#[test]
+fn batched_embeddings_match_one_at_a_time() {
+    let Ok(spec) = std::env::var("AXIOM_ENGINE_EMBED") else {
+        eprintln!("skipped: set AXIOM_ENGINE_EMBED to run");
+        return;
+    };
+    let e = Engine::load(None, Some(resolve(&spec).unwrap()), std::time::Duration::from_secs(60)).unwrap();
+    let texts: Vec<String> = (0..32).map(|i| format!("Passage {i}: revenue, hiring and the roadmap for item {i}.")).collect();
+    e.embed(&texts).unwrap(); // load the model and size its buffers for a full batch
+    let t = std::time::Instant::now();
+    let one: Vec<Vec<f32>> = texts.iter().map(|x| e.embed(std::slice::from_ref(x)).unwrap().remove(0)).collect();
+    let alone = t.elapsed().as_secs_f64();
+    let t = std::time::Instant::now();
+    let many = e.embed(&texts).unwrap();
+    let batched = t.elapsed().as_secs_f64();
+    assert_eq!(many.len(), texts.len());
+    for (a, b) in one.iter().zip(&many) {
+        let cos: f32 = a.iter().zip(b).map(|(x, y)| x * y).sum();
+        assert!(cos > 0.999, "batched and single embeddings differ: cosine {cos}");
+    }
+    assert!(batched < alone / 2.0, "32 texts took {batched:.3}s batched, {alone:.3}s one by one");
+}
