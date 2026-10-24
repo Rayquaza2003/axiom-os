@@ -1,0 +1,11 @@
+[package]
+name = "engine"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.104"
+core-ai = { version = "0.1.0", path = "../core-ai" }
+llama-cpp-2 = { version = "0.1.160", features = ["metal"] }
+platform = { version = "0.1.0", path = "../platform" }
+serde_json = "1.0.151"

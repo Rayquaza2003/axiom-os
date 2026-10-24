@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/platform", "crates/core-data", "crates/core-ai", "crates/shell", "crates/mesh", "crates/app-sdk"]
+members = ["crates/platform", "crates/core-data", "crates/core-ai", "crates/shell", "crates/mesh", "crates/app-sdk", "crates/engine"]
 
 # The wasm interpreter (and crypto) are 10-50x slower unoptimized; app fuel limits assume optimized code.
 [profile.dev.package."*"]
