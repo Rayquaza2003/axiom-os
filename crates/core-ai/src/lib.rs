@@ -160,7 +160,6 @@ impl NpuBackend for LocalBackend {
             let Some(data) = line.strip_prefix("data: ") else { return true };
             let Ok(mut v) = serde_json::from_str::<Value>(data) else { return data != "[DONE]" };
             if v["usage"].is_object() {
-                eprintln!("TRACE   ollama stream usage={} timings={}", v["usage"], v["timings"]);
                 usage = v["usage"].take();
             }
             if let Some(r) = v["choices"][0]["finish_reason"].as_str() {
@@ -189,7 +188,6 @@ impl NpuBackend for LocalBackend {
         body.as_object_mut().unwrap().remove("stream_options");
         let mut r: Value = platform::http_json(&format!("{url}/v1/chat/completions"), Some(&body), 300)?;
         let chars = body["messages"].as_array().map_or(0, |m| m.iter().map(|m| m["content"].as_str().map_or_else(|| m["content"].to_string().len(), str::len)).sum());
-        eprintln!("TRACE   ollama chat usage={} timings={}", r["usage"], r["timings"]);
         whole(chars, &r["usage"])?;
         let choice = r["choices"][0].take();
         if !choice["message"].is_object() {

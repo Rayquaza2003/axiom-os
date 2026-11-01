@@ -278,7 +278,7 @@ print(reply.choices[0].message.content)
 | `POST /v1/chat/completions` | `stream: true` streams tokens as they are generated; a client that disconnects cancels its generation. A request with `tools` (or `tool` messages) goes to the model server whole and returns its `tool_calls`; it needs `AXIOM_LLM_URL` (Ollama, llama-server), not the built-in engine, and `stream: false` |
 | `POST /v1/embeddings` | `input` is a string or a list of strings |
 
-A prompt the model server cut to fit its context fails instead of being answered from the part it kept; for long agent prompts start Ollama with `OLLAMA_CONTEXT_LENGTH=32768` (more context needs more memory). Tool-calling requests are sliced like other chats; a slice that ends inside a tool call runs that call to its end (a few seconds). A background job reads a long prompt about 1024 characters at a time, so an interactive request does not wait for the whole prompt to be read.
+A prompt the model server cut to fit its context fails instead of being answered from the part it kept; for long agent prompts start Ollama with `OLLAMA_CONTEXT_LENGTH=32768` (more context needs more memory). Tool-calling requests are sliced like other chats; a slice that ends inside a tool call runs that call to its end (a few seconds). A background job reads a long prompt in steps of about 2 seconds, so an interactive request does not wait for the whole prompt to be read.
 
 Requests without a valid key get `401`. A key reaches inference only, never your data. The daemon adds about 45 µs per request (100 µs in the slowest 5%) and uses about 6 MB of memory without a model.
 
