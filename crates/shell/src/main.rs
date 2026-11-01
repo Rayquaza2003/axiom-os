@@ -53,8 +53,13 @@ enum Cmd {
     },
     /// Sandboxed apps: install DIR | run NAME [ARGS..] | list | revoke NAME [CAP] | sign DIR | trust KEY
     App { action: AppAction, name: Option<String>, rest: Vec<String> },
-    /// System AI service (axion): status | install | uninstall | key NAME | revoke NAME
-    Daemon { action: DaemonAction, name: Option<String> },
+    /// System AI service (axion): status | install | uninstall | key NAME [--tier T] | revoke NAME
+    Daemon {
+        action: DaemonAction,
+        name: Option<String>,
+        /// key: NRM tier for this client's requests (background for bots and bulk jobs)
+        #[arg(long, value_enum, default_value_t = Tier::Interactive)] tier: Tier,
+    },
     /// AI activity: which processes run local AI and their GPU, CPU, memory and Neural Engine use
     /// (cloud AI apps run elsewhere and do not show)
     Monitor {
@@ -82,6 +87,9 @@ enum BenchKind { Embed, Generate }
 
 #[derive(clap::ValueEnum, Clone)]
 enum DaemonAction { Status, Install, Uninstall, Key, Revoke }
+
+#[derive(clap::ValueEnum, Clone, Copy)]
+enum Tier { Realtime, Interactive, Background }
 
 #[derive(clap::ValueEnum, Clone)]
 enum WsAction { Save, Open, List }
@@ -112,7 +120,7 @@ fn cli_approve() -> Option<Approve> {
 }
 
 /// Runs without opening the store or a backend, so it works while no model server is reachable.
-fn daemon_cmd(action: &DaemonAction, name: Option<&str>) -> Result<()> {
+fn daemon_cmd(action: &DaemonAction, name: Option<&str>, tier: Tier) -> Result<()> {
     let home = platform::home()?;
     let name = || name.ok_or_else(|| anyhow!("client name required"));
     match action {
@@ -155,7 +163,7 @@ fn daemon_cmd(action: &DaemonAction, name: Option<&str>) -> Result<()> {
         }
         DaemonAction::Uninstall => println!("{}", if platform::service_uninstall(daemon::LABEL)? { "uninstalled" } else { "not installed" }),
         DaemonAction::Key => {
-            let key = daemon::issue_key(&home, name()?)?;
+            let key = daemon::issue_key(&home, name()?, tier as u8)?;
             let api = daemon::status(&home)?.and_then(|s| s["http"].as_str().map(String::from)).unwrap_or_else(daemon::http_addr);
             println!("{key}\n(shown once) For OpenAI-compatible tools: base URL http://{api}/v1, this as the API key.");
         }
@@ -170,8 +178,8 @@ fn daemon_cmd(action: &DaemonAction, name: Option<&str>) -> Result<()> {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    if let Cmd::Daemon { action, name } = &cli.cmd {
-        return daemon_cmd(action, name.as_deref());
+    if let Cmd::Daemon { action, name, tier } = &cli.cmd {
+        return daemon_cmd(action, name.as_deref(), *tier);
     }
     if let Cmd::Bench { workload, secs } = &cli.cmd {
         let home = platform::home()?;

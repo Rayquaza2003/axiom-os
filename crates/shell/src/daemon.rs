@@ -187,7 +187,7 @@ impl Daemon {
 
     fn route(&self, req: &HttpRequest, c: &mut Conn) -> Option<Reply> {
         let key = req.header("authorization").and_then(|a| a.strip_prefix("Bearer ")).map(str::trim);
-        let Some(client) = key.and_then(|k| key_owner(&self.home, k)) else {
+        let Some((client, tier)) = key.and_then(|k| key_owner(&self.home, k)) else {
             return Some(error(401, "missing or unknown API key (create one with `axiom daemon key NAME`)"));
         };
         let body: Value = match req.body.is_empty() {
@@ -199,14 +199,14 @@ impl Daemon {
         };
         match (req.method.as_str(), req.path.split('?').next().unwrap_or("")) {
             ("GET", "/v1/models") => Some(ok(json!({"object": "list", "data": [{"id": MODEL, "object": "model", "owned_by": "axiom"}]}))),
-            ("POST", "/v1/embeddings") => Some(self.embeddings(&client, &body)),
-            ("POST", "/v1/chat/completions") => self.chat(&client, &body, c),
+            ("POST", "/v1/embeddings") => Some(self.embeddings(&client, tier, &body)),
+            ("POST", "/v1/chat/completions") => self.chat(&client, tier, &body, c),
             (m, p) => Some(error(404, &format!("no route {m} {p}"))),
         }
     }
 
-    // ponytail: every API client runs at INTERACTIVE; a per-key tier when a bulk client shows up.
-    fn embeddings(&self, client: &str, body: &Value) -> Reply {
+    /// API requests run at their key's tier (`axiom daemon key NAME --tier background` for a bulk client).
+    fn embeddings(&self, client: &str, tier: u8, body: &Value) -> Reply {
         let texts: Vec<String> = match &body["input"] {
             Value::String(s) => vec![s.clone()],
             v => match serde_json::from_value(v.clone()) {
@@ -214,7 +214,7 @@ impl Daemon {
                 Err(_) => return error(400, "input must be a string or a list of strings"),
             },
         };
-        match self.embed(client, INTERACTIVE, texts) {
+        match self.embed(client, tier, texts) {
             Ok(v) => ok(json!({
                 "object": "list",
                 "model": MODEL,
@@ -226,16 +226,32 @@ impl Daemon {
     }
 
     /// `None` when it streamed the answer itself (`stream: true`).
-    fn chat(&self, client: &str, body: &Value, c: &mut Conn) -> Option<Reply> {
+    fn chat(&self, client: &str, tier: u8, body: &Value, c: &mut Conn) -> Option<Reply> {
         if !self.nrm.backend.has_llm() {
             return Some(error(503, "no LLM configured (start axion with AXIOM_LLM_MODEL set)"));
+        }
+        let (id, created) = (format!("chatcmpl-{}", (platform::now() * 1e6) as u64), platform::now() as i64);
+        let tools = body.get("tools").is_some()
+            || body["messages"].as_array().is_some_and(|m| m.iter().any(|m| m["role"] == "tool"));
+        if tools {
+            // the backend sees the whole chat, so tool calls and results pass through
+            if body["stream"] == true {
+                return Some(error(400, "stream with tools is not supported; send stream: false"));
+            }
+            return Some(match self.timed(client, || self.nrm.chat(tier, body.clone())) {
+                Ok(mut choice) => {
+                    choice["index"] = json!(0);
+                    ok(json!({"id": id, "object": "chat.completion", "created": created, "model": MODEL, "choices": [choice]}))
+                }
+                Err(e) if e.to_string() == core_ai::NO_TOOLS => error(400, core_ai::NO_TOOLS),
+                Err(e) => error(500, &e.to_string()),
+            });
         }
         let Some(prompt) = prompt_of(&body["messages"]) else {
             return Some(error(400, "messages must be a non-empty list of {role, content}"));
         };
-        let (id, created) = (format!("chatcmpl-{}", (platform::now() * 1e6) as u64), platform::now() as i64);
         if body["stream"] != true {
-            return Some(match self.generate(client, INTERACTIVE, &prompt) {
+            return Some(match self.generate(client, tier, &prompt) {
                 Ok(text) => ok(json!({"id": id, "object": "chat.completion", "created": created, "model": MODEL,
                                       "choices": [{"index": 0, "message": {"role": "assistant", "content": text}, "finish_reason": "stop"}]})),
                 Err(e) => error(500, &e.to_string()),
@@ -249,7 +265,7 @@ impl Daemon {
         c.http_start(200, "text/event-stream").ok()?;
         c.http_chunk(event(json!({"role": "assistant", "content": ""}), Value::Null).as_bytes()).ok()?;
         let r = self.timed(client, || {
-            self.nrm.generate_with(INTERACTIVE, prompt, &mut |piece| c.http_chunk(event(json!({"content": piece}), Value::Null).as_bytes()).is_ok())
+            self.nrm.generate_with(tier, prompt, &mut |piece| c.http_chunk(event(json!({"content": piece}), Value::Null).as_bytes()).is_ok())
         });
         let end = match r {
             Ok(_) => event(json!({}), json!("stop")),
@@ -261,9 +277,9 @@ impl Daemon {
     }
 }
 
-/// One prompt from a chat. A lone message passes through as is.
-/// ponytail: the backend takes one prompt, so roles become text and the server's chat template sees a
-/// single user turn; pass messages through once a backend takes them.
+/// One prompt from a chat without tools. A lone message passes through as is.
+/// ponytail: roles become text, so the server's chat template sees a single user turn (this path slices
+/// and preempts; `NpuBackend::chat` keeps the turns but runs whole).
 fn prompt_of(messages: &Value) -> Option<String> {
     let msgs = messages.as_array().filter(|m| !m.is_empty())?;
     let text = |c: &Value| match c {
@@ -283,6 +299,8 @@ fn prompt_of(messages: &Value) -> Option<String> {
 fn db(home: &Path) -> Result<Connection> {
     let c = Connection::open(home.join("daemon.db"))?;
     c.execute_batch("create table if not exists keys(client text primary key, hash text not null, ts real)")?;
+    // tables from before per-key tiers gain the column; this fails harmlessly once it exists
+    let _ = c.execute_batch("alter table keys add column tier integer not null default 1");
     Ok(c)
 }
 
@@ -290,13 +308,15 @@ fn key_hash(key: &str) -> String {
     blake3::hash(key.as_bytes()).to_hex().to_string()
 }
 
-/// A new API key for `client`, replacing its old one. Only the hash is kept, so the key is shown once.
-pub fn issue_key(home: &Path, client: &str) -> Result<String> {
+/// A new API key for `client`, replacing its old one; its requests run at NRM `tier`. Only the hash is kept,
+/// so the key is shown once.
+pub fn issue_key(home: &Path, client: &str, tier: u8) -> Result<String> {
     if client == "local" || client.is_empty() || !client.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c)) {
         bail!("client name must be letters, digits, '-', '_' or '.' (and not \"local\")");
     }
     let key = format!("ax-{}", apps::hex(&platform::random_bytes::<32>()?));
-    db(home)?.execute("insert or replace into keys values(?,?,?)", params![client, key_hash(&key), platform::now()])?;
+    db(home)?.execute("insert or replace into keys(client, hash, ts, tier) values(?,?,?,?)",
+                      params![client, key_hash(&key), platform::now(), tier.min(BACKGROUND)])?;
     Ok(key)
 }
 
@@ -306,8 +326,8 @@ pub fn revoke_key(home: &Path, client: &str) -> Result<bool> {
 }
 
 /// Read per request, so `key` and `revoke` act without a restart.
-fn key_owner(home: &Path, key: &str) -> Option<String> {
-    db(home).ok()?.query_row("select client from keys where hash=?", [key_hash(key)], |r| r.get(0)).ok()
+fn key_owner(home: &Path, key: &str) -> Option<(String, u8)> {
+    db(home).ok()?.query_row("select client, tier from keys where hash=?", [key_hash(key)], |r| Ok((r.get(0)?, r.get(1)?))).ok()
 }
 
 // --- client ----------------------------------------------------------------------------------------

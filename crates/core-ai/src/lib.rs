@@ -3,7 +3,7 @@ pub mod egress;
 pub mod nrm;
 pub mod plan;
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use core_data::{Filter, Hit, Store};
 use serde_json::{json, Value};
 
@@ -45,6 +45,26 @@ pub trait NpuBackend: Send + Sync {
         }
         piece(&self.generate_at(tier, prompt)?);
         Ok(true)
+    }
+    /// One OpenAI chat request (`messages`, `tools`, ...) passed through whole, for tool calling. Returns its
+    /// first choice: `{"message": {role, content, tool_calls?}, "finish_reason"}`.
+    fn chat(&self, _tier: u8, _body: &Value) -> Result<Value> {
+        bail!("{NO_TOOLS}")
+    }
+}
+
+/// The `chat` default: a backend that takes one prompt cannot call tools.
+pub const NO_TOOLS: &str = "tools need AXIOM_LLM_URL backend (an OpenAI-compatible server such as Ollama), not the built-in engine";
+
+/// Fails when the server kept fewer prompt tokens than `chars` of text can hold. Ollama cuts a prompt longer
+/// than its context (`OLLAMA_CONTEXT_LENGTH`) without saying so, and reports the tokens it kept.
+/// ponytail: 6 chars a token is a floor no real tokenizer reaches, so only a cut of about a third or more
+/// shows; ask the server its context length when a mild cut matters.
+fn whole(chars: usize, usage: &Value) -> Result<()> {
+    match usage["prompt_tokens"].as_u64() {
+        Some(kept) if (chars as u64) > 6 * kept => bail!(
+            "the prompt ({chars} chars) did not fit the server's context: it kept {kept} tokens. Raise it (Ollama: OLLAMA_CONTEXT_LENGTH=32768)"),
+        _ => Ok(()),
     }
 }
 
@@ -120,6 +140,7 @@ impl NpuBackend for LocalBackend {
         let (url, model) = self.llm.as_ref().ok_or_else(|| anyhow::anyhow!("no LLM configured"))?;
         let body = json!({"model": model, "messages": [{"role": "user", "content": prompt}], "stream": false});
         let r: Value = platform::http_json(&format!("{url}/v1/chat/completions"), Some(&body), 300)?;
+        whole(prompt.len(), &r["usage"])?;
         Ok(r["choices"][0]["message"]["content"].as_str().unwrap_or("").to_string())
     }
 
@@ -132,11 +153,16 @@ impl NpuBackend for LocalBackend {
         if !prefix.is_empty() {
             messages.push(json!({"role": "assistant", "content": prefix}));
         }
-        let (mut reason, mut stopped) = (None, false);
-        let body = json!({"model": model, "messages": messages, "stream": true, "max_tokens": max_tokens});
+        let (mut reason, mut stopped, mut usage) = (None, false, Value::Null);
+        let body = json!({"model": model, "messages": messages, "stream": true, "max_tokens": max_tokens,
+                          "stream_options": {"include_usage": true}});
         platform::http_lines(&format!("{url}/v1/chat/completions"), &body, 300, &mut |line| {
             let Some(data) = line.strip_prefix("data: ") else { return true };
-            let Ok(v) = serde_json::from_str::<Value>(data) else { return data != "[DONE]" };
+            let Ok(mut v) = serde_json::from_str::<Value>(data) else { return data != "[DONE]" };
+            if v["usage"].is_object() {
+                eprintln!("TRACE   ollama stream usage={} timings={}", v["usage"], v["timings"]);
+                usage = v["usage"].take();
+            }
             if let Some(r) = v["choices"][0]["finish_reason"].as_str() {
                 reason = Some(r.to_string());
             }
@@ -151,7 +177,25 @@ impl NpuBackend for LocalBackend {
         if reason.is_none() && !stopped {
             anyhow::bail!("{url}: the answer stream ended early");
         }
+        whole(prompt.len() + prefix.len(), &usage)?;
         Ok(reason.is_some_and(|r| r != "length"))
+    }
+
+    fn chat(&self, _tier: u8, body: &Value) -> Result<Value> {
+        let (url, model) = self.llm.as_ref().ok_or_else(|| anyhow::anyhow!("no LLM configured"))?;
+        let mut body = body.clone();
+        body["model"] = json!(model);
+        body["stream"] = json!(false);
+        body.as_object_mut().unwrap().remove("stream_options");
+        let mut r: Value = platform::http_json(&format!("{url}/v1/chat/completions"), Some(&body), 300)?;
+        let chars = body["messages"].as_array().map_or(0, |m| m.iter().map(|m| m["content"].as_str().map_or_else(|| m["content"].to_string().len(), str::len)).sum());
+        eprintln!("TRACE   ollama chat usage={} timings={}", r["usage"], r["timings"]);
+        whole(chars, &r["usage"])?;
+        let choice = r["choices"][0].take();
+        if !choice["message"].is_object() {
+            bail!("{url}: no message in the reply");
+        }
+        Ok(choice)
     }
 }
 

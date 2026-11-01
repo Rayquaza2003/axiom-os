@@ -24,6 +24,13 @@ impl NpuBackend for Echo {
         self.calls.lock().unwrap().push(p.to_string());
         Ok(format!("echo: {p}"))
     }
+    /// Calls the first tool it is given, and records the tier as "chat@TIER".
+    fn chat(&self, tier: u8, body: &Value) -> anyhow::Result<Value> {
+        self.calls.lock().unwrap().push(format!("chat@{tier}"));
+        let name = &body["tools"][0]["function"]["name"];
+        Ok(serde_json::json!({"message": {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "c1", "type": "function", "function": {"name": name, "arguments": "{}"}}]}, "finish_reason": "tool_calls"}))
+    }
 }
 
 /// One raw HTTP exchange: (status, body).
@@ -83,13 +90,14 @@ fn daemon_shares_one_nrm_and_gates_the_api() {
     assert_eq!(*echo.calls.lock().unwrap(), ["hold", "ia", "bg"]);
     let s = daemon::status(&home).unwrap().unwrap();
     let wait = |t: &str| s["recent"][t]["wait_p95"].as_f64().unwrap();
+    let wait_bg_jobs = s["recent"]["background"]["jobs"].as_u64().unwrap();
     assert!(wait("background") > wait("interactive"), "the earlier background job waited longer: {s}");
 
     // HTTP API: no key, no service
     assert_eq!(http(&addr, "GET", "/v1/models", None, "").0, 401);
     assert_eq!(http(&addr, "GET", "/v1/models", Some("ax-guess"), "").0, 401);
-    assert!(daemon::issue_key(&home, "local").is_err(), "\"local\" names Axiom processes");
-    let key = daemon::issue_key(&home, "editor").unwrap();
+    assert!(daemon::issue_key(&home, "local", INTERACTIVE).is_err(), "\"local\" names Axiom processes");
+    let key = daemon::issue_key(&home, "editor", INTERACTIVE).unwrap();
     let k = Some(key.as_str());
     let (st, body) = http(&addr, "GET", "/v1/models", k, "");
     assert_eq!((st, json(&body)["data"][0]["id"].as_str()), (200, Some("axiom")));
@@ -118,6 +126,21 @@ fn daemon_shares_one_nrm_and_gates_the_api() {
     let s = daemon::status(&home).unwrap().unwrap();
     assert_eq!(s["clients"]["editor"]["requests"], 3, "{s}");
     assert!(s["clients"]["local"]["requests"].as_u64().unwrap() >= 5 && s["clients"]["local"]["seconds"].as_f64().unwrap() > 0.0, "{s}");
+
+    // tool calls pass through whole, at the key's tier
+    echo.calls.lock().unwrap().clear();
+    let bot = daemon::issue_key(&home, "bot", BACKGROUND).unwrap();
+    let tools = r#"{"messages":[{"role":"user","content":"price of AAPL?"}],"tools":[{"type":"function","function":{"name":"get_price","parameters":{}}}]}"#;
+    let (st, body) = http(&addr, "POST", "/v1/chat/completions", Some(&bot), tools);
+    let v = json(&body);
+    assert_eq!((st, v["choices"][0]["message"]["tool_calls"][0]["function"]["name"].as_str()), (200, Some("get_price")), "{body}");
+    assert_eq!(v["choices"][0]["finish_reason"], "tool_calls");
+    http(&addr, "POST", "/v1/embeddings", Some(&bot), r#"{"input":"x"}"#);
+    assert_eq!(*echo.calls.lock().unwrap(), ["chat@2"]);
+    let s = daemon::status(&home).unwrap().unwrap();
+    assert_eq!(s["recent"]["background"]["jobs"].as_u64().unwrap() - wait_bg_jobs, 2, "chat and embed ran at BACKGROUND: {s}");
+    let streamed = tools.replace("\"tools\"", "\"stream\":true,\"tools\"");
+    assert_eq!(http(&addr, "POST", "/v1/chat/completions", Some(&bot), &streamed).0, 400);
 
     // revoking a key bites on the next request
     assert!(daemon::revoke_key(&home, "editor").unwrap());

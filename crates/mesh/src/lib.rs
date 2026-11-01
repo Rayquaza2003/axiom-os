@@ -68,6 +68,8 @@ enum Msg {
     Embed { texts: Vec<String> },
     Vectors { v: Vec<Vec<f32>> },
     Generate { prompt: String },
+    /// A tool-calling chat request, and its reply (the first choice).
+    Chat { body: serde_json::Value },
     Speak { text: String },
     Text { s: String },
     Fail { error: String },
@@ -379,6 +381,7 @@ fn run_job(c: &mut Chan, nrm: Option<&Nrm>, m: Msg) -> Result<Stats> {
         Msg::Info => Ok(Msg::Caps { dim: nrm.backend.dim(), llm: nrm.backend.has_llm() }),
         Msg::Embed { texts } => nrm.embed(BACKGROUND, texts).map(|v| Msg::Vectors { v }),
         Msg::Generate { prompt } => nrm.generate(BACKGROUND, prompt).map(|s| Msg::Text { s }),
+        Msg::Chat { body } => nrm.chat(BACKGROUND, body).map(|body| Msg::Chat { body }),
         Msg::Speak { text } => {
             platform::speak(&text);
             Ok(Msg::Text { s: String::new() })
@@ -443,6 +446,14 @@ impl NpuBackend for RemoteBackend {
         match request(&self.addrs, &self.key, Msg::Generate { prompt: prompt.into() })? {
             Msg::Text { s } => Ok(s),
             _ => bail!("peer sent a malformed generate reply"),
+        }
+    }
+
+    fn chat(&self, _tier: u8, body: &serde_json::Value) -> Result<serde_json::Value> {
+        (self.audit)(body.to_string().len());
+        match request(&self.addrs, &self.key, Msg::Chat { body: body.clone() })? {
+            Msg::Chat { body } => Ok(body),
+            _ => bail!("peer sent a malformed chat reply"),
         }
     }
 }
